@@ -10,6 +10,7 @@ from typing import cast
 BASE_URL: str = "https://pingo.coactum.de"
 
 NUMBER_INPUT_PATTERN = re.compile(r"^[+-]?\d+(?:\.\d+)?$")
+COUNTDOWN_PATTERN = re.compile(r"startCountdown\((\d+)\)")
 
 def check_gum():
     if not shutil.which("gum"):
@@ -25,6 +26,28 @@ def run_gum(args):
     if result.returncode != 0:
         sys.exit(0)
     return result.stdout.strip()
+
+def extract_countdown_seconds(html: str) -> float | None:
+    match = COUNTDOWN_PATTERN.search(html)
+    if not match:
+        return None
+    raw_value = int(match.group(1))
+    # Heuristic: values over 1000 are likely milliseconds.
+    return raw_value / 1000.0 if raw_value > 1000 else float(raw_value)
+
+def format_time_left(seconds_left: float) -> str:
+    if seconds_left <= 0:
+        return "00:00"
+    minutes = int(seconds_left) // 60
+    seconds = int(seconds_left) % 60
+    return f"{minutes:02d}:{seconds:02d}"
+
+def print_time_left(countdown_end: float | None) -> None:
+    if countdown_end is None:
+        return
+    seconds_left = max(0.0, countdown_end - time.monotonic())
+    time_left = format_time_left(seconds_left)
+    subprocess.run(["gum", "style", "--italic", f"Time left: {time_left}"])
 
 def main():
     check_gum()
@@ -48,12 +71,16 @@ def main():
     
     form = None
     soup: BeautifulSoup | None = None
+    countdown_end: float | None = None
     
     # Polling for active poll/survey
     while not form:
         try:
             response: requests.Response = http_session.get(session_url)
             soup = BeautifulSoup(response.text, "html.parser")
+            countdown_seconds = extract_countdown_seconds(response.text)
+            if countdown_seconds is not None:
+                countdown_end = time.monotonic() + countdown_seconds
         except requests.exceptions.RequestException:
             time.sleep(3)
             continue
@@ -78,6 +105,9 @@ def main():
             if survey_url:
                 response: requests.Response = http_session.get(survey_url)
                 soup = BeautifulSoup(response.text, "html.parser")
+                countdown_seconds = extract_countdown_seconds(response.text)
+                if countdown_seconds is not None:
+                    countdown_end = time.monotonic() + countdown_seconds
                 form = soup.find("form")
                 if form:
                     break
@@ -130,6 +160,7 @@ def main():
             user_answers: list[str] = []
             
             while True:
+                print_time_left(countdown_end)
                 answer = run_gum(["input", "--placeholder", f"Answer {len(user_answers) + 1}..."])
                 if not answer:
                     break
@@ -139,12 +170,14 @@ def main():
         else:
             if is_number_input:
                 while True:
+                    print_time_left(countdown_end)
                     user_answer = run_gum(["input", "--placeholder", label_text])
                     if NUMBER_INPUT_PATTERN.fullmatch(user_answer):
                         payload[input_name] = user_answer
                         break
                     subprocess.run(["gum", "style", "--foreground", "9", "Please enter a number without thousands delimiters, for example 42.7."])
             else:
+                print_time_left(countdown_end)
                 user_answer = run_gum(["input", "--placeholder", label_text])
                 payload[input_name] = user_answer
             
@@ -173,6 +206,9 @@ def main():
             
         if is_multiple_choice:
             header: str = "Select your answers (Space to select, Enter to confirm)"
+            if countdown_end is not None:
+                time_left = format_time_left(max(0.0, countdown_end - time.monotonic()))
+                header = f"Time left: {time_left} | {header}"
             gum_args: list[str] = ["checkbox", "--header", header] + [o["label"] for o in options]
             selected_options: list[str] = run_gum(gum_args).split("\n")
 
@@ -186,6 +222,9 @@ def main():
             
         else:
             header: str = "Select your answer (Arrow keys to move, Enter to confirm)"
+            if countdown_end is not None:
+                time_left = format_time_left(max(0.0, countdown_end - time.monotonic()))
+                header = f"Time left: {time_left} | {header}"
             gum_args: list[str] = ["choose", "--header", header] + [o["label"] for o in options]
             selected_label: str = run_gum(gum_args)
 
@@ -220,4 +259,3 @@ if __name__ == "__main__":
     except KeyboardInterrupt:
         print("\nExiting...")
         sys.exit(0)
-        

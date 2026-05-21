@@ -7,14 +7,22 @@ set windows-shell := ["powershell.exe", "-NoProfile", "-c"]
 setup:
     uv sync
 
-# Run application in development
+# Build Go binary
+@build:
+    go build -o pingo.exe .
+
+# Run application in development (Go)
 @run *args:
-    uv run main.py {{args}}
+    go run . {{args}}
+
+# Run legacy Python application
+@run-py *args:
+    uv run python/pingo.py {{args}}
 
 # Build standalone Windows executable using Nuitka
-@build:
+@build-py:
     uv run nuitka --onefile --standalone --remove-output \
     --windows-product-name="PingoCLI" \
     --windows-company-name="LocalDev (0xtime)" \
     --windows-file-version=0.1.0 \
-    --output-filename=pingo main.py
+    --output-filename=pingo python/pingo.py
