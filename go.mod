@@ -7,6 +7,7 @@ require (
 	charm.land/bubbletea/v2 v2.0.0
 	charm.land/lipgloss/v2 v2.0.0
 	github.com/PuerkitoBio/goquery v1.9.2
+	github.com/catppuccin/go v0.3.0
 )
 
 require (

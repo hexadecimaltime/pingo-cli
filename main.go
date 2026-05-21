@@ -15,6 +15,7 @@ import (
 	tea "charm.land/bubbletea/v2"
 	"charm.land/lipgloss/v2"
 	"github.com/PuerkitoBio/goquery"
+	catppuccin "github.com/catppuccin/go"
 )
 
 const baseURL = "https://pingo.coactum.de"
@@ -22,6 +23,23 @@ const baseURL = "https://pingo.coactum.de"
 var (
 	countdownPattern = regexp.MustCompile(`startCountdown\((\d+)\)`)
 	numberPattern    = regexp.MustCompile(`^[+-]?\d+(?:\.\d+)?$`)
+)
+
+var (
+	mocha = catppuccin.Mocha
+
+	mochaText   = lipgloss.Color(mocha.Text().Hex)
+	mochaSubtle = lipgloss.Color(mocha.Subtext0().Hex)
+	mochaMauve  = lipgloss.Color(mocha.Mauve().Hex)
+	mochaRed    = lipgloss.Color(mocha.Red().Hex)
+)
+
+var (
+	titleStyle    = lipgloss.NewStyle().Bold(true).Foreground(mochaMauve)
+	questionStyle = lipgloss.NewStyle().Bold(true).Foreground(mochaText)
+	hintStyle     = lipgloss.NewStyle().Foreground(mochaSubtle)
+	errStyle      = lipgloss.NewStyle().Foreground(mochaRed)
+	okStyle       = lipgloss.NewStyle().Bold(true).Foreground(mochaMauve)
 )
 
 type appState int
@@ -73,22 +91,27 @@ type submitResultMsg struct {
 
 type tickMsg time.Time
 type followUpMsg struct{}
+type countdownUpdateMsg struct {
+	end time.Time
+}
+type pollStoppedMsg struct{}
 
 type model struct {
-	state        appState
-	sessionCode  string
-	question     string
-	sessionInput textinput.Model
-	answerInput  textinput.Model
-	options      []option
-	cursor       int
-	selected     map[int]bool
-	answers      []string
-	data         pollData
-	spinner      spinner.Model
-	errMsg       string
-	statusMsg    string
-	debug        bool
+	state              appState
+	sessionCode        string
+	question           string
+	sessionInput       textinput.Model
+	answerInput        textinput.Model
+	options            []option
+	cursor             int
+	selected           map[int]bool
+	answers            []string
+	data               pollData
+	spinner            spinner.Model
+	errMsg             string
+	statusMsg          string
+	debug              bool
+	lastCountdownFetch time.Time
 }
 
 func initialModel(sessionCode string, debug bool) model {
@@ -144,7 +167,12 @@ func afterDelay(msg tea.Msg, delay time.Duration) tea.Cmd {
 func (m model) Update(msg tea.Msg) (tea.Model, tea.Cmd) {
 	switch msg := msg.(type) {
 	case tickMsg:
-		return m, tick()
+		cmds := []tea.Cmd{tick()}
+		if shouldRefreshCountdown(m) && time.Since(m.lastCountdownFetch) >= time.Second {
+			m.lastCountdownFetch = time.Now()
+			cmds = append(cmds, fetchCountdown(m.sessionCode, m.debug))
+		}
+		return m, tea.Batch(cmds...)
 	case spinner.TickMsg:
 		var cmd tea.Cmd
 		m.spinner, cmd = m.spinner.Update(msg)
@@ -160,6 +188,7 @@ func (m model) Update(msg tea.Msg) (tea.Model, tea.Cmd) {
 		if msg.data.inputLabel != "" {
 			m.answerInput.Placeholder = msg.data.inputLabel
 		}
+		m.lastCountdownFetch = time.Now()
 		m.sessionInput.Blur()
 		if msg.data.isMultiChoice {
 			m.answerInput.Blur()
@@ -192,6 +221,14 @@ func (m model) Update(msg tea.Msg) (tea.Model, tea.Cmd) {
 		m.state = stateError
 		m.errMsg = fmt.Sprintf("Failed to submit. Status: %d", msg.status)
 		return m, tea.Quit
+	case pollStoppedMsg:
+		m.state = stateDone
+		m.statusMsg = "Question closed."
+		return m, afterDelay(followUpMsg{}, time.Second)
+	case countdownUpdateMsg:
+		m.data.countdownEnd = msg.end
+		m.data.hasCountdown = true
+		return m, nil
 	case followUpMsg:
 		return m, tea.Quit
 	case tea.KeyMsg:
@@ -305,20 +342,24 @@ func updateMultiChoice(m model, msg tea.KeyMsg) (tea.Model, tea.Cmd) {
 	return m, nil
 }
 
+func shouldRefreshCountdown(m model) bool {
+	return m.sessionCode != "" && (m.state == stateTextInput || m.state == stateMultiTextInput || m.state == stateSingleChoice || m.state == stateMultiChoice)
+}
+
 func (m model) View() tea.View {
 	switch m.state {
 	case stateSessionInput:
 		return tea.NewView(joinLines(
-			"PINGO",
+			titleStyle.Render("PINGO"),
 			"",
 			m.sessionInput.View(),
 			"",
-			"Enter to submit",
+			hintStyle.Render("Enter to submit"),
 		))
 	case stateLoading:
 		return tea.NewView(joinLines(
-			"Connecting to session...",
-			fmt.Sprintf("%s Waiting for an active poll or survey...", m.spinner.View()),
+			hintStyle.Render("Connecting to session..."),
+			hintStyle.Render(fmt.Sprintf("%s Waiting for an active poll or survey...", m.spinner.View())),
 		))
 	case stateTextInput:
 		return tea.NewView(joinLines(
@@ -327,7 +368,7 @@ func (m model) View() tea.View {
 			"",
 			m.answerInput.View(),
 			errLine(m.errMsg),
-			"Enter to submit",
+			hintStyle.Render("Enter to submit"),
 		))
 	case stateMultiTextInput:
 		answers := strings.Join(m.answers, ", ")
@@ -335,10 +376,10 @@ func (m model) View() tea.View {
 			timeLeftLine(m.data),
 			questionLine(m.question),
 			"",
-			"Answers so far: "+answers,
+			hintStyle.Render("Answers so far: "+answers),
 			m.answerInput.View(),
 			errLine(m.errMsg),
-			"Enter to add, empty to submit",
+			hintStyle.Render("Enter to add, empty to submit"),
 		))
 	case stateSingleChoice:
 		return tea.NewView(joinLines(
@@ -346,7 +387,7 @@ func (m model) View() tea.View {
 			questionLine(m.question),
 			"",
 			choiceListView(m.options, m.cursor, nil),
-			"Enter to submit",
+			hintStyle.Render("Enter to submit"),
 		))
 	case stateMultiChoice:
 		return tea.NewView(joinLines(
@@ -354,19 +395,19 @@ func (m model) View() tea.View {
 			questionLine(m.question),
 			"",
 			choiceListView(m.options, m.cursor, m.selected),
-			"Space to toggle, Enter to submit",
+			hintStyle.Render("Space to toggle, Enter to submit"),
 		))
 	case stateSubmitting:
 		return tea.NewView(joinLines(
 			timeLeftLine(m.data),
 			questionLine(m.question),
 			"",
-			fmt.Sprintf("%s Submitting...", m.spinner.View()),
+			hintStyle.Render(fmt.Sprintf("%s Submitting...", m.spinner.View())),
 		))
 	case stateDone:
-		return tea.NewView(joinLines(lipgloss.NewStyle().Bold(true).Render(m.statusMsg)))
+		return tea.NewView(joinLines(okStyle.Render(m.statusMsg)))
 	case stateError:
-		return tea.NewView(joinLines(lipgloss.NewStyle().Foreground(lipgloss.Color("9")).Render(m.errMsg)))
+		return tea.NewView(joinLines(errStyle.Render(m.errMsg)))
 	default:
 		return tea.NewView("")
 	}
@@ -380,21 +421,23 @@ func timeLeftLine(data pollData) string {
 	if remaining < 0 {
 		remaining = 0
 	}
-	return fmt.Sprintf("Time left: %s", formatDuration(remaining))
+	label := hintStyle.Render("Time left: ")
+	value := lipgloss.NewStyle().Bold(true).Foreground(mochaMauve).Render(formatDuration(remaining))
+	return label + value
 }
 
 func questionLine(question string) string {
 	if strings.TrimSpace(question) == "" {
 		return ""
 	}
-	return "Q: " + question
+	return questionStyle.Render("Q: " + question)
 }
 
 func errLine(msg string) string {
 	if msg == "" {
 		return ""
 	}
-	return lipgloss.NewStyle().Foreground(lipgloss.Color("9")).Render(msg)
+	return errStyle.Render(msg)
 }
 
 func choiceListView(options []option, cursor int, selected map[int]bool) string {
@@ -518,6 +561,54 @@ func fetchActivePoll(sessionCode string, debug bool) tea.Cmd {
 
 			time.Sleep(3 * time.Second)
 		}
+	}
+}
+
+func fetchCountdown(sessionCode string, debug bool) tea.Cmd {
+	return func() tea.Msg {
+		client := &http.Client{Timeout: 10 * time.Second}
+		sessionURL := fmt.Sprintf("%s/%s", baseURL, sessionCode)
+		resp, err := client.Get(sessionURL)
+		if err != nil {
+			return nil
+		}
+		bodyBytes, err := readAll(resp)
+		resp.Body.Close()
+		if err != nil {
+			return nil
+		}
+
+		if _, ok := parsePollHTML(bodyBytes); ok {
+			if end, ok := parseCountdown(bodyBytes); ok {
+				return countdownUpdateMsg{end: end}
+			}
+			return nil
+		}
+		if debug {
+			debugInspectHTML(bodyBytes)
+		}
+
+		surveyURL := findSurveyURL(bodyBytes)
+		if surveyURL != "" {
+			resp2, err := client.Get(surveyURL)
+			if err == nil {
+				body2, err := readAll(resp2)
+				resp2.Body.Close()
+				if err == nil {
+					if _, ok := parseSurveyHTML(body2); ok {
+						if end, ok := parseCountdown(body2); ok {
+							return countdownUpdateMsg{end: end}
+						}
+						return nil
+					}
+					if debug {
+						debugInspectHTML(body2)
+					}
+				}
+			}
+		}
+
+		return pollStoppedMsg{}
 	}
 }
 
