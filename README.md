@@ -2,19 +2,14 @@
 
 Go TUI version of [Pingo](https://pingo.coactum.de) using Charm Bubble Tea, with a live countdown and interactive inputs.
 
-Run (Go):
+Run in development:
 
-	just run <SESSION_CODE>
+```bash
+just run [SESSION_CODE]
+```
 
-Build (Go):
+Build :
 
-	just build
-
-Run (legacy Python):
-
-	just run-py <SESSION_CODE>
-
-Notes:
-
-- The Go version is the primary implementation.
-- The Python version lives in python/pingo.py.
+```bash
+just build
+```
