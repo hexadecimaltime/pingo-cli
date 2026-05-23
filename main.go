@@ -587,8 +587,6 @@ func (m model) View() tea.View {
 			"",
 			m.sessionInput.View(),
 			"",
-			hintStyle.Render("Enter to submit"),
-			"",
 			footerLine(m),
 		))
 
