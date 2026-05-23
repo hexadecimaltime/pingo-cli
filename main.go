@@ -2,6 +2,8 @@ package main
 
 import (
 	"bytes"
+	"context"
+	"encoding/json"
 	"fmt"
 	"net/http"
 	"net/url"
@@ -23,15 +25,20 @@ const baseURL = "https://pingo.coactum.de"
 var (
 	countdownPattern = regexp.MustCompile(`startCountdown\((\d+)\)`)
 	numberPattern    = regexp.MustCompile(`^[+-]?\d+(?:\.\d+)?$`)
+	surveyIDPattern  = regexp.MustCompile(`/surveys/([^/]+)/?`)
 )
 
 var (
 	mocha = catppuccin.Mocha
 
-	mochaText   = lipgloss.Color(mocha.Text().Hex)
-	mochaSubtle = lipgloss.Color(mocha.Subtext0().Hex)
-	mochaMauve  = lipgloss.Color(mocha.Mauve().Hex)
-	mochaRed    = lipgloss.Color(mocha.Red().Hex)
+	mochaText     = lipgloss.Color(mocha.Text().Hex)
+	mochaSubtle   = lipgloss.Color(mocha.Subtext0().Hex)
+	mochaSubtle2  = lipgloss.Color(mocha.Subtext1().Hex)
+	mochaOverlay0 = lipgloss.Color(mocha.Overlay0().Hex)
+	mochaMauve    = lipgloss.Color(mocha.Mauve().Hex)
+	mochaRed      = lipgloss.Color(mocha.Red().Hex)
+	mochaSurface  = lipgloss.Color(mocha.Surface0().Hex)
+	mochaSurface1 = lipgloss.Color(mocha.Surface1().Hex)
 )
 
 var (
@@ -40,6 +47,11 @@ var (
 	hintStyle     = lipgloss.NewStyle().Foreground(mochaSubtle)
 	errStyle      = lipgloss.NewStyle().Foreground(mochaRed)
 	okStyle       = lipgloss.NewStyle().Bold(true).Foreground(mochaMauve)
+	footerStyle   = lipgloss.NewStyle().Background(mochaSurface).Foreground(mochaSubtle2)
+	keyStyle      = lipgloss.NewStyle().Bold(true).Foreground(mochaMauve).Background(mochaSurface)
+	barDimStyle   = lipgloss.NewStyle().Foreground(mochaSubtle2).Background(mochaSurface)
+	barSepStyle   = lipgloss.NewStyle().Foreground(mochaSurface1).Background(mochaSurface)
+	logStyle      = lipgloss.NewStyle().Foreground(mochaOverlay0)
 )
 
 type appState int
@@ -67,6 +79,7 @@ type pollData struct {
 	hidden        map[string]string
 	inputName     string
 	inputLabel    string
+	surveyID      string
 	isNumberInput bool
 	isMultiText   bool
 	isMultiChoice bool
@@ -95,6 +108,16 @@ type countdownUpdateMsg struct {
 	end time.Time
 }
 type pollStoppedMsg struct{}
+type fayeConnectedMsg struct {
+	client *FayeClient
+	events <-chan FayeEvent
+}
+type fayeEventMsg struct {
+	event FayeEvent
+}
+type fayeErrorMsg struct {
+	err error
+}
 
 type model struct {
 	state              appState
@@ -112,6 +135,13 @@ type model struct {
 	statusMsg          string
 	debug              bool
 	lastCountdownFetch time.Time
+	wsActive           bool
+	faye               *FayeClient
+	fayeEvents         <-chan FayeEvent
+	lastIteration      int
+	lastTimestamp      time.Time
+	subscribedSurvey   string
+	width              int
 }
 
 func initialModel(sessionCode string, debug bool) model {
@@ -147,8 +177,9 @@ func initialModel(sessionCode string, debug bool) model {
 
 func (m model) Init() tea.Cmd {
 	if m.state == stateLoading {
-		return tea.Batch(m.spinner.Tick, fetchActivePoll(m.sessionCode, m.debug), tick())
+		return tea.Batch(m.spinner.Tick, fetchActivePoll(m.sessionCode, m.debug), startFaye(m.sessionCode), tick())
 	}
+
 	return tea.Batch(m.spinner.Tick, tick())
 }
 
@@ -164,19 +195,70 @@ func afterDelay(msg tea.Msg, delay time.Duration) tea.Cmd {
 	})
 }
 
+func startFaye(sessionCode string) tea.Cmd {
+	if sessionCode == "" {
+		return nil
+	}
+
+	return func() tea.Msg {
+		client := NewFayeClient()
+		ctx, cancel := context.WithTimeout(context.Background(), 5*time.Second)
+		defer cancel()
+		sessionChannel := "/sess/" + sessionCode
+		if err := client.Connect(ctx, "wss://pingo.coactum.de/push/faye", sessionChannel); err != nil {
+			return fayeErrorMsg{err: err}
+		}
+
+		return fayeConnectedMsg{client: client, events: client.Events()}
+	}
+}
+
+func listenFaye(events <-chan FayeEvent) tea.Cmd {
+	if events == nil {
+		return nil
+	}
+
+	return func() tea.Msg {
+		event, ok := <-events
+		if !ok {
+			return fayeErrorMsg{err: fmt.Errorf("websocket closed")}
+		}
+
+		return fayeEventMsg{event: event}
+	}
+}
+
 func (m model) Update(msg tea.Msg) (tea.Model, tea.Cmd) {
 	switch msg := msg.(type) {
 	case tickMsg:
 		cmds := []tea.Cmd{tick()}
+		if m.data.hasCountdown {
+			remaining := time.Until(m.data.countdownEnd)
+			if remaining <= 0 && (m.state == stateTextInput || m.state == stateMultiTextInput || m.state == stateSingleChoice || m.state == stateMultiChoice) {
+				m.state = stateDone
+				m.statusMsg = "Time ran out."
+
+				return m, tea.Quit
+			}
+		}
 		if shouldRefreshCountdown(m) && time.Since(m.lastCountdownFetch) >= time.Second {
 			m.lastCountdownFetch = time.Now()
 			cmds = append(cmds, fetchCountdown(m.sessionCode, m.debug))
 		}
+
 		return m, tea.Batch(cmds...)
+
 	case spinner.TickMsg:
 		var cmd tea.Cmd
 		m.spinner, cmd = m.spinner.Update(msg)
+
 		return m, cmd
+
+	case tea.WindowSizeMsg:
+		m.width = msg.Width
+
+		return m, nil
+
 	case pollFoundMsg:
 		m.data = msg.data
 		m.question = msg.data.question
@@ -188,53 +270,90 @@ func (m model) Update(msg tea.Msg) (tea.Model, tea.Cmd) {
 		if msg.data.inputLabel != "" {
 			m.answerInput.Placeholder = msg.data.inputLabel
 		}
+		if msg.data.surveyID != "" {
+			m.subscribedSurvey = msg.data.surveyID
+			_ = subscribeFayeSurvey(m.faye, msg.data.surveyID)
+		}
 		m.lastCountdownFetch = time.Now()
 		m.sessionInput.Blur()
 		if msg.data.isMultiChoice {
 			m.answerInput.Blur()
 			m.state = stateMultiChoice
+
 			return m, nil
 		}
 		if len(msg.data.options) > 0 {
 			m.answerInput.Blur()
 			m.state = stateSingleChoice
+
 			return m, nil
 		}
 		if msg.data.isMultiText {
 			m.answerInput.Focus()
 			m.state = stateMultiTextInput
+
 			return m, nil
 		}
 		m.answerInput.Focus()
 		m.state = stateTextInput
+
 		return m, nil
+
 	case pollErrorMsg:
 		m.state = stateError
 		m.errMsg = msg.err.Error()
+
 		return m, nil
+
 	case submitResultMsg:
 		if msg.success {
 			m.state = stateDone
 			m.statusMsg = "Success! Answer submitted."
+
 			return m, afterDelay(followUpMsg{}, 3*time.Second)
 		}
 		m.state = stateError
 		m.errMsg = fmt.Sprintf("Failed to submit. Status: %d", msg.status)
+
 		return m, tea.Quit
+
 	case pollStoppedMsg:
 		m.state = stateDone
 		m.statusMsg = "Question closed."
+
 		return m, afterDelay(followUpMsg{}, time.Second)
+
+	case fayeConnectedMsg:
+		m.faye = msg.client
+		m.fayeEvents = msg.events
+		m.wsActive = true
+
+		return m, listenFaye(m.fayeEvents)
+
+	case fayeEventMsg:
+		m = handleFayeEvent(m, msg.event)
+
+		return m, listenFaye(m.fayeEvents)
+
+	case fayeErrorMsg:
+		m.wsActive = false
+
+		return m, nil
+
 	case countdownUpdateMsg:
 		m.data.countdownEnd = msg.end
 		m.data.hasCountdown = true
+
 		return m, nil
+
 	case followUpMsg:
 		return m, tea.Quit
+
 	case tea.KeyMsg:
 		switch msg.String() {
 		case "q":
 			if m.state != stateTextInput && m.state != stateMultiTextInput {
+
 				return m, tea.Quit
 			}
 		case "ctrl+c", "esc", "ctrl+q":
@@ -251,9 +370,11 @@ func (m model) Update(msg tea.Msg) (tea.Model, tea.Cmd) {
 				if code != "" {
 					m.sessionCode = code
 					m.state = stateLoading
-					return m, tea.Batch(m.spinner.Tick, fetchActivePoll(m.sessionCode, m.debug))
+
+					return m, tea.Batch(m.spinner.Tick, fetchActivePoll(m.sessionCode, m.debug), startFaye(m.sessionCode))
 				}
 			}
+
 			return m, cmd
 		case stateTextInput:
 			var cmd tea.Cmd
@@ -263,12 +384,15 @@ func (m model) Update(msg tea.Msg) (tea.Model, tea.Cmd) {
 				value := strings.TrimSpace(m.answerInput.Value())
 				if m.data.isNumberInput && !numberPattern.MatchString(value) {
 					m.errMsg = "Please enter a number without thousands delimiters, for example 42.7."
+
 					return m, nil
 				}
 				m.errMsg = ""
 				m.state = stateSubmitting
+
 				return m, submitVote(m.data, []string{value})
 			}
+
 			return m, cmd
 		case stateMultiTextInput:
 			var cmd tea.Cmd
@@ -278,11 +402,13 @@ func (m model) Update(msg tea.Msg) (tea.Model, tea.Cmd) {
 				value := strings.TrimSpace(m.answerInput.Value())
 				if value == "" {
 					m.state = stateSubmitting
+
 					return m, submitVote(m.data, m.answers)
 				}
 				m.answers = append(m.answers, value)
 				m.answerInput.SetValue("")
 			}
+
 			return m, cmd
 		case stateSingleChoice:
 			return updateSingleChoice(m, msg)
@@ -290,6 +416,7 @@ func (m model) Update(msg tea.Msg) (tea.Model, tea.Cmd) {
 			return updateMultiChoice(m, msg)
 		}
 	}
+
 	return m, nil
 }
 
@@ -305,12 +432,15 @@ func updateSingleChoice(m model, msg tea.KeyMsg) (tea.Model, tea.Cmd) {
 		}
 	case "enter":
 		if len(m.options) == 0 {
+
 			return m, nil
 		}
 		choice := m.options[m.cursor]
 		m.state = stateSubmitting
+
 		return m, submitVote(m.data, []string{choice.value})
 	}
+
 	return m, nil
 }
 
@@ -326,6 +456,7 @@ func updateMultiChoice(m model, msg tea.KeyMsg) (tea.Model, tea.Cmd) {
 		}
 	case " ":
 		if len(m.options) == 0 {
+
 			return m, nil
 		}
 		m.selected[m.cursor] = !m.selected[m.cursor]
@@ -337,13 +468,115 @@ func updateMultiChoice(m model, msg tea.KeyMsg) (tea.Model, tea.Cmd) {
 			}
 		}
 		m.state = stateSubmitting
+
 		return m, submitVote(m.data, values)
 	}
+
 	return m, nil
 }
 
 func shouldRefreshCountdown(m model) bool {
-	return m.sessionCode != "" && (m.state == stateTextInput || m.state == stateMultiTextInput || m.state == stateSingleChoice || m.state == stateMultiChoice)
+	return !m.wsActive && m.sessionCode != "" && (m.state == stateTextInput || m.state == stateMultiTextInput || m.state == stateSingleChoice || m.state == stateMultiChoice)
+}
+
+func subscribeFayeSurvey(client *FayeClient, surveyID string) error {
+	if client == nil || surveyID == "" {
+		return nil
+	}
+
+	return client.Subscribe(context.Background(), "/s/"+surveyID)
+}
+
+func handleFayeEvent(m model, event FayeEvent) model {
+	data := event.Data
+	switch data.Type {
+	case "status_change":
+		if !timestampOk(&m, data.Timestamp) {
+
+			return m
+		}
+		if data.Session != "" && m.subscribedSurvey != data.Session {
+			m.subscribedSurvey = data.Session
+			_ = subscribeFayeSurvey(m.faye, data.Session)
+		}
+		switch payloadString(data.Payload) {
+		case "stop_scheduled":
+			if data.Time > 0 {
+				m.data.countdownEnd = time.Now().Add(time.Duration(data.Time) * time.Millisecond)
+				m.data.hasCountdown = true
+			}
+		case "stopped":
+			m.state = stateDone
+			m.statusMsg = "Question closed."
+		}
+	case "countdown":
+		if !iterationOk(&m, data.Iteration) {
+
+			return m
+		}
+		if payload := payloadFloat(data.Payload); payload > 0 {
+			m.data.countdownEnd = time.Now().Add(time.Duration(payload) * time.Millisecond)
+			m.data.hasCountdown = true
+		}
+	}
+
+	return m
+}
+
+func timestampOk(m *model, ts string) bool {
+	if ts == "" {
+		return true
+	}
+	parsed, err := time.Parse(time.RFC3339Nano, ts)
+	if err != nil {
+		return true
+	}
+	if m.lastTimestamp.IsZero() || parsed.After(m.lastTimestamp) {
+		m.lastTimestamp = parsed
+
+		return true
+	}
+
+	return false
+}
+
+func iterationOk(m *model, iteration int) bool {
+	if iteration == 0 {
+		return true
+	}
+	if iteration == 1 || iteration > m.lastIteration {
+		m.lastIteration = iteration
+
+		return true
+	}
+
+	return false
+}
+
+func payloadString(raw json.RawMessage) string {
+	if len(raw) == 0 {
+		return ""
+	}
+	var value string
+	if err := json.Unmarshal(raw, &value); err == nil {
+
+		return value
+	}
+
+	return ""
+}
+
+func payloadFloat(raw json.RawMessage) float64 {
+	if len(raw) == 0 {
+		return 0
+	}
+	var value float64
+	if err := json.Unmarshal(raw, &value); err == nil {
+
+		return value
+	}
+
+	return 0
 }
 
 func (m model) View() tea.View {
@@ -355,12 +588,18 @@ func (m model) View() tea.View {
 			m.sessionInput.View(),
 			"",
 			hintStyle.Render("Enter to submit"),
+			"",
+			footerLine(m),
 		))
+
 	case stateLoading:
 		return tea.NewView(joinLines(
-			hintStyle.Render("Connecting to session..."),
-			hintStyle.Render(fmt.Sprintf("%s Waiting for an active poll or survey...", m.spinner.View())),
+			logStyle.Render("Connecting to session..."),
+			logStyle.Render(fmt.Sprintf("%s Waiting for an active poll or survey...", m.spinner.View())),
+			"",
+			footerLine(m),
 		))
+
 	case stateTextInput:
 		return tea.NewView(joinLines(
 			timeLeftLine(m.data),
@@ -369,7 +608,10 @@ func (m model) View() tea.View {
 			m.answerInput.View(),
 			errLine(m.errMsg),
 			hintStyle.Render("Enter to submit"),
+			"",
+			footerLine(m),
 		))
+
 	case stateMultiTextInput:
 		answers := strings.Join(m.answers, ", ")
 		return tea.NewView(joinLines(
@@ -380,7 +622,10 @@ func (m model) View() tea.View {
 			m.answerInput.View(),
 			errLine(m.errMsg),
 			hintStyle.Render("Enter to add, empty to submit"),
+			"",
+			footerLine(m),
 		))
+
 	case stateSingleChoice:
 		return tea.NewView(joinLines(
 			timeLeftLine(m.data),
@@ -388,7 +633,10 @@ func (m model) View() tea.View {
 			"",
 			choiceListView(m.options, m.cursor, nil),
 			hintStyle.Render("Enter to submit"),
+			"",
+			footerLine(m),
 		))
+
 	case stateMultiChoice:
 		return tea.NewView(joinLines(
 			timeLeftLine(m.data),
@@ -396,16 +644,23 @@ func (m model) View() tea.View {
 			"",
 			choiceListView(m.options, m.cursor, m.selected),
 			hintStyle.Render("Space to toggle, Enter to submit"),
+			"",
+			footerLine(m),
 		))
+
 	case stateSubmitting:
 		return tea.NewView(joinLines(
 			timeLeftLine(m.data),
 			questionLine(m.question),
 			"",
 			hintStyle.Render(fmt.Sprintf("%s Submitting...", m.spinner.View())),
+			"",
+			footerLine(m),
 		))
+
 	case stateDone:
 		return tea.NewView(joinLines(okStyle.Render(m.statusMsg)))
+
 	case stateError:
 		return tea.NewView(joinLines(errStyle.Render(m.errMsg)))
 	default:
@@ -473,12 +728,54 @@ func formatDuration(d time.Duration) string {
 func joinLines(lines ...string) string {
 	filtered := make([]string, 0, len(lines))
 	for _, line := range lines {
-		if strings.TrimSpace(line) == "" {
-			continue
-		}
 		filtered = append(filtered, line)
 	}
-	return strings.Join(filtered, "\n") + "\n"
+	start := 0
+	end := len(filtered)
+	for start < end && strings.TrimSpace(filtered[start]) == "" {
+		start++
+	}
+	for end > start && strings.TrimSpace(filtered[end-1]) == "" {
+		end--
+	}
+	return strings.Join(filtered[start:end], "\n") + "\n"
+}
+
+func footerLine(m model) string {
+	if m.state == stateDone || m.state == stateError {
+		return ""
+	}
+	width := m.width
+	if width <= 0 {
+		width = 80
+	}
+	left := footerHotkeys(m)
+	right := keyStyle.Render("Ctrl+C") + barDimStyle.Render(" quit")
+	separator := barSepStyle.Render("|")
+	gap := barDimStyle.Render("  ")
+	content := left + gap + separator + gap + right
+	innerWidth := width - 2
+	if innerWidth < 10 {
+		innerWidth = width
+	}
+	contentWidth := lipgloss.Width(content)
+	if contentWidth < innerWidth {
+		content += barDimStyle.Render(strings.Repeat(" ", innerWidth-contentWidth))
+	}
+	return footerStyle.Width(width).Padding(0, 1).Render(content)
+}
+
+func footerHotkeys(m model) string {
+	parts := []string{}
+	if m.state == stateSingleChoice || m.state == stateMultiChoice {
+		parts = append(parts, keyStyle.Render("Up/Down")+barDimStyle.Render(" move"))
+	}
+	if m.state == stateMultiChoice {
+		parts = append(parts, keyStyle.Render("Space")+barDimStyle.Render(" toggle"))
+	}
+	parts = append(parts, keyStyle.Render("Enter")+barDimStyle.Render(" submit"))
+	joiner := barDimStyle.Render("  ") + barSepStyle.Render("|") + barDimStyle.Render("  ")
+	return strings.Join(parts, joiner)
 }
 
 func submitVote(data pollData, answers []string) tea.Cmd {
@@ -615,24 +912,30 @@ func fetchCountdown(sessionCode string, debug bool) tea.Cmd {
 func parsePollHTML(body []byte) (pollData, bool) {
 	doc, err := goquery.NewDocumentFromReader(bytes.NewReader(body))
 	if err != nil {
+
 		return pollData{}, false
 	}
 	form := findPollForm(doc)
 	if form == nil || form.Length() == 0 {
+
 		return pollData{}, false
 	}
+
 	return parseForm(doc, form, body)
 }
 
 func parseSurveyHTML(body []byte) (pollData, bool) {
 	doc, err := goquery.NewDocumentFromReader(bytes.NewReader(body))
 	if err != nil {
+
 		return pollData{}, false
 	}
 	form := findPollForm(doc)
 	if form == nil || form.Length() == 0 {
+
 		return pollData{}, false
 	}
+
 	return parseForm(doc, form, body)
 }
 
@@ -643,30 +946,57 @@ func findPollForm(doc *goquery.Document) *goquery.Selection {
 		action, _ := s.Attr("action")
 		if strings.Contains(action, "/vote") && hasPollInputs(s) {
 			best = s
+
 			return false
 		}
+
 		return true
 	})
 	if best != nil {
+
 		return best
 	}
 	forms.EachWithBreak(func(_ int, s *goquery.Selection) bool {
 		if hasPollInputs(s) {
 			best = s
+
 			return false
 		}
+
 		return true
 	})
+
 	return best
 }
 
 func hasPollInputs(form *goquery.Selection) bool {
 	textInputs := form.Find("input[type='text'], input[type='number'], textarea")
 	if textInputs.Length() > 0 {
+
 		return true
 	}
 	optionInputs := form.Find("input[name='option'], input[name='option[]'], input[name='options[]'], input[name='survey_answer[]']")
+
 	return optionInputs.Length() > 0
+}
+
+func extractSurveyID(hidden map[string]string, formAction string) string {
+	keys := []string{"survey", "survey_id", "surveyid", "surveyId"}
+	for _, key := range keys {
+		if value, ok := hidden[key]; ok {
+			value = strings.TrimSpace(value)
+			if value != "" {
+
+				return value
+			}
+		}
+	}
+	if matches := surveyIDPattern.FindStringSubmatch(formAction); len(matches) > 1 {
+
+		return matches[1]
+	}
+
+	return ""
 }
 
 func parseForm(doc *goquery.Document, form *goquery.Selection, body []byte) (pollData, bool) {
@@ -684,6 +1014,8 @@ func parseForm(doc *goquery.Document, form *goquery.Selection, body []byte) (pol
 			hidden[name] = value
 		}
 	})
+
+	surveyID := extractSurveyID(hidden, formAction)
 
 	countdownEnd, hasCountdown := parseCountdown(body)
 
@@ -714,6 +1046,7 @@ func parseForm(doc *goquery.Document, form *goquery.Selection, body []byte) (pol
 			hidden:        hidden,
 			inputName:     inputName,
 			inputLabel:    label,
+			surveyID:      surveyID,
 			isNumberInput: isNumberInput,
 			isMultiText:   isMultiText,
 			hasCountdown:  hasCountdown,
@@ -727,6 +1060,7 @@ func parseForm(doc *goquery.Document, form *goquery.Selection, body []byte) (pol
 	inputName := "option"
 	optionInputs.Each(func(i int, s *goquery.Selection) {
 		if typ, _ := s.Attr("type"); typ == "hidden" {
+
 			return
 		}
 		if typ, _ := s.Attr("type"); typ == "checkbox" {
@@ -745,6 +1079,7 @@ func parseForm(doc *goquery.Document, form *goquery.Selection, body []byte) (pol
 	})
 
 	if len(options) == 0 {
+
 		return pollData{}, false
 	}
 
@@ -753,6 +1088,7 @@ func parseForm(doc *goquery.Document, form *goquery.Selection, body []byte) (pol
 		formAction:    formAction,
 		hidden:        hidden,
 		inputName:     inputName,
+		surveyID:      surveyID,
 		isMultiChoice: isMultiChoice,
 		options:       options,
 		hasCountdown:  hasCountdown,
@@ -763,6 +1099,7 @@ func parseForm(doc *goquery.Document, form *goquery.Selection, body []byte) (pol
 func findSurveyURL(body []byte) string {
 	doc, err := goquery.NewDocumentFromReader(bytes.NewReader(body))
 	if err != nil {
+
 		return ""
 	}
 	var surveyURL string
@@ -773,16 +1110,21 @@ func findSurveyURL(body []byte) string {
 		if (strings.Contains(hrefLower, "survey") && strings.Contains(hrefLower, "participate")) ||
 			(strings.Contains(text, "survey") && strings.Contains(text, "participate")) {
 			surveyURL = href
+
 			return false
 		}
+
 		return true
 	})
 	if surveyURL == "" {
+
 		return ""
 	}
 	if strings.HasPrefix(surveyURL, "http") {
+
 		return surveyURL
 	}
+
 	return baseURL + surveyURL
 }
 
@@ -790,6 +1132,7 @@ func debugInspectHTML(body []byte) {
 	doc, err := goquery.NewDocumentFromReader(bytes.NewReader(body))
 	if err != nil {
 		fmt.Fprintln(os.Stderr, "[debug] parse error:", err)
+
 		return
 	}
 	forms := doc.Find("form")
@@ -805,33 +1148,41 @@ func debugInspectHTML(body []byte) {
 func parseCountdown(body []byte) (time.Time, bool) {
 	matches := countdownPattern.FindSubmatch(body)
 	if len(matches) < 2 {
+
 		return time.Time{}, false
 	}
 	value := string(matches[1])
 	parsed, err := time.ParseDuration(value + "s")
 	if err != nil {
+
 		return time.Time{}, false
 	}
-	// Heuristic: values over 1000 are likely milliseconds.
+	// values over 1000 are likely milliseconds.
 	if parsed > 1000*time.Second {
 		ms, err := time.ParseDuration(value + "ms")
 		if err != nil {
+
 			return time.Time{}, false
 		}
+
 		return time.Now().Add(ms), true
 	}
+
 	return time.Now().Add(parsed), true
 }
 
 func readAll(resp *http.Response) ([]byte, error) {
 	if resp == nil {
+
 		return nil, fmt.Errorf("empty response")
 	}
 	buf := new(bytes.Buffer)
 	_, err := buf.ReadFrom(resp.Body)
 	if err != nil {
+
 		return nil, err
 	}
+
 	return buf.Bytes(), nil
 }
 

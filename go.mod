@@ -8,6 +8,7 @@ require (
 	charm.land/lipgloss/v2 v2.0.0
 	github.com/PuerkitoBio/goquery v1.9.2
 	github.com/catppuccin/go v0.3.0
+	nhooyr.io/websocket v1.8.11
 )
 
 require (

@@ -1,6 +1,6 @@
-Pingo CLI
+# Pingo CLI
 
-Go TUI version using Charm Bubble Tea, with a live countdown and interactive inputs.
+Go TUI version of [Pingo](https://pingo.coactum.de) using Charm Bubble Tea, with a live countdown and interactive inputs.
 
 Run (Go):
 
@@ -15,5 +15,6 @@ Run (legacy Python):
 	just run-py <SESSION_CODE>
 
 Notes:
+
 - The Go version is the primary implementation.
 - The Python version lives in python/pingo.py.
