@@ -4,7 +4,9 @@ import (
 	"bytes"
 	"context"
 	"encoding/json"
+	"flag"
 	"fmt"
+	"io"
 	"net/http"
 	"net/url"
 	"os"
@@ -133,7 +135,6 @@ type model struct {
 	spinner            spinner.Model
 	errMsg             string
 	statusMsg          string
-	debug              bool
 	lastCountdownFetch time.Time
 	wsActive           bool
 	faye               *FayeClient
@@ -144,15 +145,15 @@ type model struct {
 	width              int
 }
 
-func initialModel(sessionCode string, debug bool) model {
+func initialModel(sessionCode string) model {
 	sessionInput := textinput.New()
-	sessionInput.Placeholder = "Enter PINGO session code..."
+	sessionInput.Placeholder = t(msgSessionCode)
 	sessionInput.CharLimit = 64
 	sessionInput.SetWidth(40)
 	sessionInput.Focus()
 
 	answerInput := textinput.New()
-	answerInput.Placeholder = "Enter your answer"
+	answerInput.Placeholder = t(msgEnterYourAnswer)
 	answerInput.CharLimit = 512
 	answerInput.SetWidth(60)
 
@@ -171,13 +172,12 @@ func initialModel(sessionCode string, debug bool) model {
 		answerInput:  answerInput,
 		selected:     map[int]bool{},
 		spinner:      spin,
-		debug:        debug,
 	}
 }
 
 func (m model) Init() tea.Cmd {
 	if m.state == stateLoading {
-		return tea.Batch(m.spinner.Tick, fetchActivePoll(m.sessionCode, m.debug), startFaye(m.sessionCode), tick())
+		return tea.Batch(m.spinner.Tick, fetchActivePoll(m.sessionCode), startFaye(m.sessionCode), tick())
 	}
 
 	return tea.Batch(m.spinner.Tick, tick())
@@ -236,14 +236,14 @@ func (m model) Update(msg tea.Msg) (tea.Model, tea.Cmd) {
 			remaining := time.Until(m.data.countdownEnd)
 			if remaining <= 0 && (m.state == stateTextInput || m.state == stateMultiTextInput || m.state == stateSingleChoice || m.state == stateMultiChoice) {
 				m.state = stateDone
-				m.statusMsg = "Time ran out."
+				m.statusMsg = t(msgTimeRanOut)
 
 				return m, tea.Quit
 			}
 		}
 		if shouldRefreshCountdown(m) && time.Since(m.lastCountdownFetch) >= time.Second {
 			m.lastCountdownFetch = time.Now()
-			cmds = append(cmds, fetchCountdown(m.sessionCode, m.debug))
+			cmds = append(cmds, fetchCountdown(m.sessionCode))
 		}
 
 		return m, tea.Batch(cmds...)
@@ -308,18 +308,18 @@ func (m model) Update(msg tea.Msg) (tea.Model, tea.Cmd) {
 	case submitResultMsg:
 		if msg.success {
 			m.state = stateDone
-			m.statusMsg = "Success! Answer submitted."
+			m.statusMsg = t(msgSuccessSubmitted)
 
 			return m, afterDelay(followUpMsg{}, 3*time.Second)
 		}
 		m.state = stateError
-		m.errMsg = fmt.Sprintf("Failed to submit. Status: %d", msg.status)
+		m.errMsg = tData(msgFailedSubmitStatus, map[string]any{"Status": msg.status})
 
 		return m, tea.Quit
 
 	case pollStoppedMsg:
 		m.state = stateDone
-		m.statusMsg = "Question closed."
+		m.statusMsg = t(msgQuestionClosed)
 
 		return m, afterDelay(followUpMsg{}, time.Second)
 
@@ -371,7 +371,7 @@ func (m model) Update(msg tea.Msg) (tea.Model, tea.Cmd) {
 					m.sessionCode = code
 					m.state = stateLoading
 
-					return m, tea.Batch(m.spinner.Tick, fetchActivePoll(m.sessionCode, m.debug), startFaye(m.sessionCode))
+					return m, tea.Batch(m.spinner.Tick, fetchActivePoll(m.sessionCode), startFaye(m.sessionCode))
 				}
 			}
 
@@ -383,7 +383,7 @@ func (m model) Update(msg tea.Msg) (tea.Model, tea.Cmd) {
 			if msg.String() == "enter" {
 				value := strings.TrimSpace(m.answerInput.Value())
 				if m.data.isNumberInput && !numberPattern.MatchString(value) {
-					m.errMsg = "Please enter a number without thousands delimiters, for example 42.7."
+					m.errMsg = t(msgNumberRequired)
 
 					return m, nil
 				}
@@ -507,7 +507,7 @@ func handleFayeEvent(m model, event FayeEvent) model {
 			}
 		case "stopped":
 			m.state = stateDone
-			m.statusMsg = "Question closed."
+			m.statusMsg = t(msgQuestionClosed)
 		}
 	case "countdown":
 		if !iterationOk(&m, data.Iteration) {
@@ -592,8 +592,8 @@ func (m model) View() tea.View {
 
 	case stateLoading:
 		return tea.NewView(joinLines(
-			logStyle.Render("Connecting to session..."),
-			logStyle.Render(fmt.Sprintf("%s Waiting for an active poll or survey...", m.spinner.View())),
+			logStyle.Render(t(msgConnecting)),
+			logStyle.Render(fmt.Sprintf("%s %s", m.spinner.View(), t(msgWaitingActive))),
 			"",
 			footerLine(m),
 		))
@@ -605,7 +605,7 @@ func (m model) View() tea.View {
 			"",
 			m.answerInput.View(),
 			errLine(m.errMsg),
-			hintStyle.Render("Enter to submit"),
+			hintStyle.Render(t(msgEnterToSubmit)),
 			"",
 			footerLine(m),
 		))
@@ -616,10 +616,10 @@ func (m model) View() tea.View {
 			timeLeftLine(m.data),
 			questionLine(m.question),
 			"",
-			hintStyle.Render("Answers so far: "+answers),
+			hintStyle.Render(tData(msgAnswersSoFar, map[string]any{"Answers": answers})),
 			m.answerInput.View(),
 			errLine(m.errMsg),
-			hintStyle.Render("Enter to add, empty to submit"),
+			hintStyle.Render(t(msgEnterToAdd)),
 			"",
 			footerLine(m),
 		))
@@ -630,7 +630,7 @@ func (m model) View() tea.View {
 			questionLine(m.question),
 			"",
 			choiceListView(m.options, m.cursor, nil),
-			hintStyle.Render("Enter to submit"),
+			hintStyle.Render(t(msgEnterToSubmit)),
 			"",
 			footerLine(m),
 		))
@@ -641,7 +641,7 @@ func (m model) View() tea.View {
 			questionLine(m.question),
 			"",
 			choiceListView(m.options, m.cursor, m.selected),
-			hintStyle.Render("Space to toggle, Enter to submit"),
+			hintStyle.Render(t(msgSpaceToggleEnterSubmit)),
 			"",
 			footerLine(m),
 		))
@@ -651,7 +651,7 @@ func (m model) View() tea.View {
 			timeLeftLine(m.data),
 			questionLine(m.question),
 			"",
-			hintStyle.Render(fmt.Sprintf("%s Submitting...", m.spinner.View())),
+			hintStyle.Render(fmt.Sprintf("%s %s", m.spinner.View(), t(msgSubmitting))),
 			"",
 			footerLine(m),
 		))
@@ -674,7 +674,7 @@ func timeLeftLine(data pollData) string {
 	if remaining < 0 {
 		remaining = 0
 	}
-	label := hintStyle.Render("Time left: ")
+	label := hintStyle.Render(t(msgTimeLeft))
 	value := lipgloss.NewStyle().Bold(true).Foreground(mochaMauve).Render(formatDuration(remaining))
 	return label + value
 }
@@ -683,7 +683,7 @@ func questionLine(question string) string {
 	if strings.TrimSpace(question) == "" {
 		return ""
 	}
-	return questionStyle.Render("Q: " + question)
+	return questionStyle.Render(t(msgQuestionPrefix) + question)
 }
 
 func errLine(msg string) string {
@@ -748,7 +748,7 @@ func footerLine(m model) string {
 		width = 80
 	}
 	left := footerHotkeys(m)
-	right := keyStyle.Render("Ctrl+C") + barDimStyle.Render(" quit")
+	right := keyStyle.Render("Ctrl+C") + barDimStyle.Render(" "+t(msgQuit))
 	separator := barSepStyle.Render("|")
 	gap := barDimStyle.Render("  ")
 	content := left + gap + separator + gap + right
@@ -766,12 +766,12 @@ func footerLine(m model) string {
 func footerHotkeys(m model) string {
 	parts := []string{}
 	if m.state == stateSingleChoice || m.state == stateMultiChoice {
-		parts = append(parts, keyStyle.Render("Up/Down")+barDimStyle.Render(" move"))
+		parts = append(parts, keyStyle.Render("Up/Down")+barDimStyle.Render(" "+t(msgMove)))
 	}
 	if m.state == stateMultiChoice {
-		parts = append(parts, keyStyle.Render("Space")+barDimStyle.Render(" toggle"))
+		parts = append(parts, keyStyle.Render("Space")+barDimStyle.Render(" "+t(msgToggle)))
 	}
-	parts = append(parts, keyStyle.Render("Enter")+barDimStyle.Render(" submit"))
+	parts = append(parts, keyStyle.Render("Enter")+barDimStyle.Render(" "+t(msgSubmit)))
 	joiner := barDimStyle.Render("  ") + barSepStyle.Render("|") + barDimStyle.Render("  ")
 	return strings.Join(parts, joiner)
 }
@@ -811,7 +811,7 @@ func submitVote(data pollData, answers []string) tea.Cmd {
 	}
 }
 
-func fetchActivePoll(sessionCode string, debug bool) tea.Cmd {
+func fetchActivePoll(sessionCode string) tea.Cmd {
 	return func() tea.Msg {
 		client := &http.Client{Timeout: 15 * time.Second}
 		sessionURL := fmt.Sprintf("%s/%s", baseURL, sessionCode)
@@ -832,9 +832,6 @@ func fetchActivePoll(sessionCode string, debug bool) tea.Cmd {
 			if ok {
 				return pollFoundMsg{data: data}
 			}
-			if debug {
-				debugInspectHTML(bodyBytes)
-			}
 
 			surveyURL := findSurveyURL(bodyBytes)
 			if surveyURL != "" {
@@ -847,9 +844,6 @@ func fetchActivePoll(sessionCode string, debug bool) tea.Cmd {
 						if ok {
 							return pollFoundMsg{data: data}
 						}
-						if debug {
-							debugInspectHTML(body2)
-						}
 					}
 				}
 			}
@@ -859,7 +853,7 @@ func fetchActivePoll(sessionCode string, debug bool) tea.Cmd {
 	}
 }
 
-func fetchCountdown(sessionCode string, debug bool) tea.Cmd {
+func fetchCountdown(sessionCode string) tea.Cmd {
 	return func() tea.Msg {
 		client := &http.Client{Timeout: 10 * time.Second}
 		sessionURL := fmt.Sprintf("%s/%s", baseURL, sessionCode)
@@ -879,9 +873,6 @@ func fetchCountdown(sessionCode string, debug bool) tea.Cmd {
 			}
 			return nil
 		}
-		if debug {
-			debugInspectHTML(bodyBytes)
-		}
 
 		surveyURL := findSurveyURL(bodyBytes)
 		if surveyURL != "" {
@@ -895,9 +886,6 @@ func fetchCountdown(sessionCode string, debug bool) tea.Cmd {
 							return countdownUpdateMsg{end: end}
 						}
 						return nil
-					}
-					if debug {
-						debugInspectHTML(body2)
 					}
 				}
 			}
@@ -1028,12 +1016,16 @@ func parseForm(doc *goquery.Document, form *goquery.Selection, body []byte) (pol
 		inputType, _ := target.Attr("type")
 		id, _ := target.Attr("id")
 		label := strings.TrimSpace(doc.Find(fmt.Sprintf("label[for='%s']", id)).First().Text())
-		if label == "" {
-			label = "Enter your answer"
-		}
 		pageText := strings.ToLower(doc.Text())
 		isMultiText := strings.HasSuffix(inputName, "[]") || strings.Contains(pageText, "multiple answers") || strings.Contains(pageText, "mehrere antworten")
 		isNumberInput := inputType == "number" || strings.Contains(pageText, "please enter the number without a thousands delimiter")
+		if label == "" {
+			label = t(msgEnterYourAnswer)
+		}
+		labelLower := strings.ToLower(label)
+		if isNumberInput && strings.Contains(labelLower, "please enter the number") {
+			label = t(msgEnterNumber)
+		}
 		if isMultiText && !strings.HasSuffix(inputName, "[]") {
 			inputName += "[]"
 		}
@@ -1071,7 +1063,7 @@ func parseForm(doc *goquery.Document, form *goquery.Selection, body []byte) (pol
 		label := strings.TrimSpace(doc.Find(fmt.Sprintf("label[for='%s']", id)).First().Text())
 		value, _ := s.Attr("value")
 		if label == "" {
-			label = fmt.Sprintf("Option %d", i+1)
+			label = tData(msgOptionDefault, map[string]any{"Index": i + 1})
 		}
 		options = append(options, option{label: label, value: value})
 	})
@@ -1126,23 +1118,6 @@ func findSurveyURL(body []byte) string {
 	return baseURL + surveyURL
 }
 
-func debugInspectHTML(body []byte) {
-	doc, err := goquery.NewDocumentFromReader(bytes.NewReader(body))
-	if err != nil {
-		fmt.Fprintln(os.Stderr, "[debug] parse error:", err)
-
-		return
-	}
-	forms := doc.Find("form")
-	fmt.Fprintf(os.Stderr, "[debug] forms=%d\n", forms.Length())
-	forms.Each(func(i int, s *goquery.Selection) {
-		action, _ := s.Attr("action")
-		textInputs := s.Find("input[type='text'], input[type='number'], textarea").Length()
-		optionInputs := s.Find("input[name='option'], input[name='option[]'], input[name='options[]'], input[name='survey_answer[]']").Length()
-		fmt.Fprintf(os.Stderr, "[debug] form[%d] action=%q textInputs=%d optionInputs=%d\n", i, action, textInputs, optionInputs)
-	})
-}
-
 func parseCountdown(body []byte) (time.Time, bool) {
 	matches := countdownPattern.FindSubmatch(body)
 	if len(matches) < 2 {
@@ -1185,21 +1160,100 @@ func readAll(resp *http.Response) ([]byte, error) {
 }
 
 func main() {
-	sessionCode := ""
-	debug := false
-	for _, arg := range os.Args[1:] {
-		if arg == "--debug" || arg == "-d" {
-			debug = true
-			continue
-		}
-		if sessionCode == "" {
-			sessionCode = strings.TrimSpace(arg)
-		}
-	}
-
-	p := tea.NewProgram(initialModel(sessionCode, debug))
-	if _, err := p.Run(); err != nil {
+	sessionCode, langFlag, showHelp, err := parseArgs(os.Args[1:])
+	if err != nil {
 		fmt.Println("Error:", err)
 		os.Exit(1)
 	}
+	if showHelp {
+		fmt.Print(buildUsage())
+		return
+	}
+	if err := initI18n(langFlag); err != nil {
+		fmt.Println("Error:", err)
+		os.Exit(1)
+	}
+
+	p := tea.NewProgram(initialModel(sessionCode))
+	if _, err := p.Run(); err != nil {
+		fmt.Println(t(msgErrorPrefix), err)
+		os.Exit(1)
+	}
+}
+
+func parseArgs(args []string) (string, string, bool, error) {
+	fs := flag.NewFlagSet("pingo", flag.ContinueOnError)
+	fs.SetOutput(io.Discard)
+	var langFlag string
+	var showHelp bool
+	fs.StringVar(&langFlag, "lang", "", "Language tag (e.g., en, de). Defaults to system locale.")
+	fs.StringVar(&langFlag, "l", "", "Language tag (e.g., en, de). Defaults to system locale.")
+
+	flagArgs, positionals, showHelp, err := splitArgs(args)
+	if err != nil {
+		return "", "", false, err
+	}
+	if showHelp {
+		return "", "", true, nil
+	}
+	if err := fs.Parse(flagArgs); err != nil {
+		return "", "", false, err
+	}
+	sessionCode := ""
+	if len(positionals) > 0 {
+		sessionCode = strings.TrimSpace(positionals[0])
+	}
+	return sessionCode, langFlag, false, nil
+}
+
+func splitArgs(args []string) ([]string, []string, bool, error) {
+	flagArgs := make([]string, 0, len(args))
+	positionals := make([]string, 0, len(args))
+	showHelp := false
+	valueFlags := map[string]bool{"--lang": true, "-l": true}
+	for i := 0; i < len(args); i++ {
+		arg := args[i]
+		if arg == "--" {
+			positionals = append(positionals, args[i+1:]...)
+			break
+		}
+		if arg == "-h" || arg == "--help" {
+			showHelp = true
+			continue
+		}
+		if strings.HasPrefix(arg, "--lang=") || strings.HasPrefix(arg, "-l=") {
+			flagArgs = append(flagArgs, arg)
+			continue
+		}
+		if strings.HasPrefix(arg, "-") {
+			flagArgs = append(flagArgs, arg)
+			if valueFlags[arg] {
+				if i+1 >= len(args) {
+					return nil, nil, false, fmt.Errorf("missing value for %s", arg)
+				}
+				flagArgs = append(flagArgs, args[i+1])
+				i++
+			}
+			continue
+		}
+		positionals = append(positionals, arg)
+	}
+
+	return flagArgs, positionals, showHelp, nil
+}
+
+func buildUsage() string {
+	return strings.Join([]string{
+		"Usage:",
+		"  pingo [SESSION_CODE] [flags]",
+		"",
+		"Flags:",
+		"  -l, --lang <tag>   Language tag (e.g., en, de). Defaults to system locale.",
+		"  -h, --help         Show this help.",
+		"",
+		"Examples:",
+		"  pingo 620610 --lang de",
+		"  pingo --lang en 620610",
+		"  pingo -l de",
+	}, "\n") + "\n"
 }
