@@ -421,18 +421,18 @@ func (m model) Update(msg tea.Msg) (tea.Model, tea.Cmd) {
 }
 
 func updateSingleChoice(m model, msg tea.KeyMsg) (tea.Model, tea.Cmd) {
-	switch msg.String() {
-	case "up", "k":
+	key := msg.Key()
+	switch key.Code {
+	case tea.KeyUp, 'k':
 		if m.cursor > 0 {
 			m.cursor--
 		}
-	case "down", "j":
+	case tea.KeyDown, 'j':
 		if m.cursor < len(m.options)-1 {
 			m.cursor++
 		}
-	case "enter":
+	case tea.KeySpace, tea.KeyEnter:
 		if len(m.options) == 0 {
-
 			return m, nil
 		}
 		choice := m.options[m.cursor]
@@ -445,22 +445,22 @@ func updateSingleChoice(m model, msg tea.KeyMsg) (tea.Model, tea.Cmd) {
 }
 
 func updateMultiChoice(m model, msg tea.KeyMsg) (tea.Model, tea.Cmd) {
-	switch msg.String() {
-	case "up", "k":
+	key := msg.Key()
+	switch key.Code {
+	case tea.KeyUp, 'k':
 		if m.cursor > 0 {
 			m.cursor--
 		}
-	case "down", "j":
+	case tea.KeyDown, 'j':
 		if m.cursor < len(m.options)-1 {
 			m.cursor++
 		}
-	case " ":
+	case tea.KeySpace:
 		if len(m.options) == 0 {
-
 			return m, nil
 		}
 		m.selected[m.cursor] = !m.selected[m.cursor]
-	case "enter":
+	case tea.KeyEnter:
 		var values []string
 		for idx, opt := range m.options {
 			if m.selected[idx] {
@@ -599,22 +599,39 @@ func (m model) View() tea.View {
 		))
 
 	case stateTextInput:
-		return tea.NewView(joinLines(
+		q := questionLine(m.question)
+
+		lines := []string{
 			timeLeftLine(m.data),
-			questionLine(m.question),
+		}
+
+		if q != "" {
+			lines = append(lines, q)
+		}
+
+		lines = append(lines,
 			"",
 			m.answerInput.View(),
 			errLine(m.errMsg),
-			hintStyle.Render(t(msgEnterToSubmit)),
 			"",
 			footerLine(m),
-		))
+		)
+
+		return tea.NewView(joinLines(lines...))
 
 	case stateMultiTextInput:
 		answers := strings.Join(m.answers, ", ")
-		return tea.NewView(joinLines(
+
+		q := questionLine(m.question)
+		lines := []string{
 			timeLeftLine(m.data),
-			questionLine(m.question),
+		}
+
+		if q != "" {
+			lines = append(lines, q)
+		}
+
+		lines = append(lines,
 			"",
 			hintStyle.Render(tData(msgAnswersSoFar, map[string]any{"Answers": answers})),
 			m.answerInput.View(),
@@ -622,39 +639,70 @@ func (m model) View() tea.View {
 			hintStyle.Render(t(msgEnterToAdd)),
 			"",
 			footerLine(m),
-		))
+		)
+
+		return tea.NewView(joinLines(lines...))
 
 	case stateSingleChoice:
-		return tea.NewView(joinLines(
+		q := questionLine(m.question)
+
+		lines := []string{
 			timeLeftLine(m.data),
-			questionLine(m.question),
+		}
+
+		if q != "" {
+			lines = append(lines, q)
+		}
+
+		lines = append(lines,
 			"",
 			choiceListView(m.options, m.cursor, nil),
-			hintStyle.Render(t(msgEnterToSubmit)),
 			"",
 			footerLine(m),
-		))
+		)
+
+		return tea.NewView(joinLines(lines...))
 
 	case stateMultiChoice:
-		return tea.NewView(joinLines(
+		q := questionLine(m.question)
+
+		lines := []string{
 			timeLeftLine(m.data),
-			questionLine(m.question),
+		}
+
+		if q != "" {
+			lines = append(lines, q)
+		}
+
+		lines = append(lines,
 			"",
 			choiceListView(m.options, m.cursor, m.selected),
 			hintStyle.Render(t(msgSpaceToggleEnterSubmit)),
 			"",
 			footerLine(m),
-		))
+		)
+
+		return tea.NewView(joinLines(lines...))
 
 	case stateSubmitting:
-		return tea.NewView(joinLines(
+		q := questionLine(m.question)
+
+		lines := []string{
 			timeLeftLine(m.data),
-			questionLine(m.question),
+		}
+
+		if q != "" {
+			lines = append(lines, q)
+		}
+
+		lines = append(lines,
 			"",
 			hintStyle.Render(fmt.Sprintf("%s %s", m.spinner.View(), t(msgSubmitting))),
 			"",
 			footerLine(m),
-		))
+		)
+
+		return tea.NewView(joinLines(lines...))
 
 	case stateDone:
 		return tea.NewView(joinLines(okStyle.Render(m.statusMsg)))
