@@ -26,6 +26,7 @@ pingo [SESSION_CODE] [flags]
 ### Flags
 
 - `-l`, `--lang <tag>`: Language tag (e.g., `en`, `de`). Defaults to the system locale.
+- `-v`, `--version`: Print version and exit.
 - `-h`, `--help`: Show help and usage instructions.
 
 ### Examples

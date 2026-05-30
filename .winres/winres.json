@@ -1,20 +1,20 @@
 {
-  "RT_VERSION": {
-    "#1": {
-      "0000": {
-        "fixed": {
-          "file_version": "0.1.0.0",
-          "product_version": "0.1.0.0"
-        },
-        "info": {
-          "0000": {
-            "ProductName": "PingoCLI",
-            "FileDescription": "Pingo CLI",
-            "CompanyName": "0xtime (Tim Eschmann)",
-            "OriginalFilename": "pingo.exe"
-          }
-        }
-      }
-    }
-  }
+    "RT_VERSION":  {
+                       "#1":  {
+                                  "0000":  {
+                                               "fixed":  {
+                                                             "file_version":  "{{version}}.0",
+                                                             "product_version":  "{{version}}.0"
+                                                         },
+                                               "info":  {
+                                                            "0000":  {
+                                                                         "ProductName":  "PingoCLI",
+                                                                         "FileDescription":  "Pingo CLI",
+                                                                         "CompanyName":  "0xtime (Tim Eschmann)",
+                                                                         "OriginalFilename":  "pingo.exe"
+                                                                     }
+                                                        }
+                                           }
+                              }
+                   }
 }

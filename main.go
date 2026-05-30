@@ -24,6 +24,8 @@ import (
 
 const baseURL = "https://pingo.coactum.de"
 
+var version = "dev"
+
 var (
 	countdownPattern = regexp.MustCompile(`startCountdown\((\d+)\)`)
 	numberPattern    = regexp.MustCompile(`^[+-]?\d+(?:\.\d+)?$`)
@@ -1208,13 +1210,17 @@ func readAll(resp *http.Response) ([]byte, error) {
 }
 
 func main() {
-	sessionCode, langFlag, showHelp, err := parseArgs(os.Args[1:])
+	sessionCode, langFlag, showHelp, showVersion, err := parseArgs(os.Args[1:])
 	if err != nil {
 		fmt.Println("Error:", err)
 		os.Exit(1)
 	}
 	if showHelp {
 		fmt.Print(buildUsage())
+		return
+	}
+	if showVersion {
+		fmt.Println(version)
 		return
 	}
 	if err := initI18n(langFlag); err != nil {
@@ -1229,7 +1235,7 @@ func main() {
 	}
 }
 
-func parseArgs(args []string) (string, string, bool, error) {
+func parseArgs(args []string) (string, string, bool, bool, error) {
 	fs := flag.NewFlagSet("pingo", flag.ContinueOnError)
 	fs.SetOutput(io.Discard)
 	var langFlag string
@@ -1237,27 +1243,28 @@ func parseArgs(args []string) (string, string, bool, error) {
 	fs.StringVar(&langFlag, "lang", "", "Language tag (e.g., en, de). Defaults to system locale.")
 	fs.StringVar(&langFlag, "l", "", "Language tag (e.g., en, de). Defaults to system locale.")
 
-	flagArgs, positionals, showHelp, err := splitArgs(args)
+	flagArgs, positionals, showHelp, showVersion, err := splitArgs(args)
 	if err != nil {
-		return "", "", false, err
+		return "", "", false, false, err
 	}
 	if showHelp {
-		return "", "", true, nil
+		return "", "", true, false, nil
 	}
 	if err := fs.Parse(flagArgs); err != nil {
-		return "", "", false, err
+		return "", "", false, false, err
 	}
 	sessionCode := ""
 	if len(positionals) > 0 {
 		sessionCode = strings.TrimSpace(positionals[0])
 	}
-	return sessionCode, langFlag, false, nil
+	return sessionCode, langFlag, false, showVersion, nil
 }
 
-func splitArgs(args []string) ([]string, []string, bool, error) {
+func splitArgs(args []string) ([]string, []string, bool, bool, error) {
 	flagArgs := make([]string, 0, len(args))
 	positionals := make([]string, 0, len(args))
 	showHelp := false
+	showVersion := false
 	valueFlags := map[string]bool{"--lang": true, "-l": true}
 	for i := 0; i < len(args); i++ {
 		arg := args[i]
@@ -1269,6 +1276,10 @@ func splitArgs(args []string) ([]string, []string, bool, error) {
 			showHelp = true
 			continue
 		}
+		if arg == "-v" || arg == "--version" {
+			showVersion = true
+			continue
+		}
 		if strings.HasPrefix(arg, "--lang=") || strings.HasPrefix(arg, "-l=") {
 			flagArgs = append(flagArgs, arg)
 			continue
@@ -1277,7 +1288,7 @@ func splitArgs(args []string) ([]string, []string, bool, error) {
 			flagArgs = append(flagArgs, arg)
 			if valueFlags[arg] {
 				if i+1 >= len(args) {
-					return nil, nil, false, fmt.Errorf("missing value for %s", arg)
+					return nil, nil, false, false, fmt.Errorf("missing value for %s", arg)
 				}
 				flagArgs = append(flagArgs, args[i+1])
 				i++
@@ -1287,7 +1298,7 @@ func splitArgs(args []string) ([]string, []string, bool, error) {
 		positionals = append(positionals, arg)
 	}
 
-	return flagArgs, positionals, showHelp, nil
+	return flagArgs, positionals, showHelp, showVersion, nil
 }
 
 func buildUsage() string {
@@ -1297,6 +1308,7 @@ func buildUsage() string {
 		"",
 		"Flags:",
 		"  -l, --lang <tag>   Language tag (e.g., en, de). Defaults to system locale.",
+		"  -v, --version      Print version and exit.",
 		"  -h, --help         Show this help.",
 		"",
 		"Examples:",
