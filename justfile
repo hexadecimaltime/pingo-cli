@@ -1,7 +1,7 @@
 set windows-shell := ["powershell.exe", "-NoProfile", "-c"]
 
 # Global Variables
-export VERSION := "0.1.0"
+export VERSION := "0.1.1"
 app_name := "pingo"
 bin_dir := "bin"
 version := VERSION
