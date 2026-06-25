@@ -10,6 +10,7 @@ import (
 	"net/http"
 	"net/url"
 	"os"
+	"path/filepath"
 	"regexp"
 	"strings"
 	"time"
@@ -17,9 +18,11 @@ import (
 	"charm.land/bubbles/v2/spinner"
 	"charm.land/bubbles/v2/textinput"
 	tea "charm.land/bubbletea/v2"
+	"charm.land/huh/v2"
 	"charm.land/lipgloss/v2"
 	"github.com/PuerkitoBio/goquery"
 	catppuccin "github.com/catppuccin/go"
+	"github.com/hexadecimaltime/pingo-cli/history"
 )
 
 const baseURL = "https://pingo.coactum.de"
@@ -70,6 +73,7 @@ const (
 	stateSubmitting
 	stateDone
 	stateError
+	stateConfigMenu
 )
 
 type option struct {
@@ -122,6 +126,58 @@ type fayeEventMsg struct {
 type fayeErrorMsg struct {
 	err error
 }
+type historyLoadedMsg []history.Session
+
+// --- Configuration Logic ---
+
+type appConfig struct {
+	HistoryEnabled bool   `json:"history_enabled"`
+	Language       string `json:"language"`
+}
+
+func getConfigPath() string {
+	configDir, err := os.UserConfigDir()
+	if err != nil {
+		return "config.json"
+	}
+	return filepath.Join(configDir, "pingo-cli", "config.json")
+}
+
+func loadConfig() appConfig {
+	var cfg appConfig
+	path := getConfigPath()
+	data, err := os.ReadFile(path)
+	if err == nil {
+		json.Unmarshal(data, &cfg)
+	}
+	return cfg
+}
+
+func saveConfig(cfg appConfig) error {
+	path := getConfigPath()
+	os.MkdirAll(filepath.Dir(path), 0755)
+	data, err := json.MarshalIndent(cfg, "", "  ")
+	if err != nil {
+		return err
+	}
+	return os.WriteFile(path, data, 0644)
+}
+
+// --- CLI Flags Logic ---
+
+type cliFlags struct {
+	sessionCode  string
+	langFlag     string
+	historyTemp  bool
+	historyOn    bool
+	historyOff   bool
+	clearHistory bool
+	openConfig   bool
+	showHelp     bool
+	showVersion  bool
+}
+
+// --- Bubble Tea Model ---
 
 type model struct {
 	state              appState
@@ -145,9 +201,14 @@ type model struct {
 	lastTimestamp      time.Time
 	subscribedSurvey   string
 	width              int
+	store              history.Store
+	sessionHistory     []history.Session
+	historyCursor      int
+	cfg                *appConfig
+	configForm         *huh.Form
 }
 
-func initialModel(sessionCode string) model {
+func initialModel(flags cliFlags, cfg *appConfig, store history.Store) model {
 	sessionInput := textinput.New()
 	sessionInput.Placeholder = t(msgSessionCode)
 	sessionInput.CharLimit = 64
@@ -163,26 +224,65 @@ func initialModel(sessionCode string) model {
 	spin.Spinner = spinner.Line
 
 	state := stateSessionInput
-	if sessionCode != "" {
+	var configForm *huh.Form
+
+	// Boot directly to config UI if the flag is provided
+	if flags.openConfig {
+		state = stateConfigMenu
+		configForm = huh.NewForm(
+			huh.NewGroup(
+				huh.NewConfirm().
+					Title("Enable Local History Tracking?").
+					Description("Saves session codes and answers to your local disk.").
+					Value(&cfg.HistoryEnabled),
+				huh.NewSelect[string]().
+					Title("Interface Language").
+					Description("Sets the default language for the application.").
+					Options(
+						huh.NewOption("System Default", ""),
+						huh.NewOption("English", "en"),
+						huh.NewOption("Deutsch", "de"),
+					).
+					Value(&cfg.Language),
+			),
+		).WithShowHelp(true)
+	} else if flags.sessionCode != "" {
 		state = stateLoading
 	}
 
 	return model{
-		state:        state,
-		sessionCode:  sessionCode,
-		sessionInput: sessionInput,
-		answerInput:  answerInput,
-		selected:     map[int]bool{},
-		spinner:      spin,
+		state:         state,
+		sessionCode:   flags.sessionCode,
+		sessionInput:  sessionInput,
+		answerInput:   answerInput,
+		selected:      map[int]bool{},
+		spinner:       spin,
+		store:         store,
+		historyCursor: -1,
+		cfg:           cfg,
+		configForm:    configForm,
+	}
+}
+
+func loadHistoryCmd(store history.Store) tea.Cmd {
+	return func() tea.Msg {
+		sessions, err := store.ListSessions(context.Background())
+		if err != nil {
+			return nil
+		}
+		return historyLoadedMsg(sessions)
 	}
 }
 
 func (m model) Init() tea.Cmd {
+	if m.state == stateConfigMenu {
+		return m.configForm.Init()
+	}
 	if m.state == stateLoading {
-		return tea.Batch(m.spinner.Tick, fetchActivePoll(m.sessionCode), startFaye(m.sessionCode), tick())
+		return tea.Batch(m.spinner.Tick, fetchActivePoll(m.sessionCode), startFaye(m.sessionCode), tick(), loadHistoryCmd(m.store))
 	}
 
-	return tea.Batch(m.spinner.Tick, tick())
+	return tea.Batch(m.spinner.Tick, textinput.Blink, tick(), loadHistoryCmd(m.store))
 }
 
 func tick() tea.Cmd {
@@ -230,8 +330,73 @@ func listenFaye(events <-chan FayeEvent) tea.Cmd {
 	}
 }
 
+func submitAndSave(m model, answers []string) tea.Cmd {
+	saveCmd := func() tea.Msg {
+		var opts []string
+		for _, opt := range m.options {
+			opts = append(opts, opt.label)
+		}
+
+		var humanReadableAnswers []string
+		for _, ans := range answers {
+			labelFound := ans
+			for _, opt := range m.options {
+				if opt.value == ans {
+					labelFound = opt.label
+					break
+				}
+			}
+			humanReadableAnswers = append(humanReadableAnswers, labelFound)
+		}
+
+		givenAnswer := strings.Join(humanReadableAnswers, ", ")
+		_ = m.store.SaveAnswer(context.Background(), m.sessionCode, m.question, givenAnswer, opts)
+		return nil
+	}
+	return tea.Batch(submitVote(m.data, answers), saveCmd)
+}
+
 func (m model) Update(msg tea.Msg) (tea.Model, tea.Cmd) {
+	// Delegate early to the huh form if in the config menu
+	if m.state == stateConfigMenu {
+		form, cmd := m.configForm.Update(msg)
+		if f, ok := form.(*huh.Form); ok {
+			m.configForm = f
+		}
+
+		if m.configForm.State == huh.StateCompleted {
+			// Save the mutated config back to disk
+			_ = saveConfig(*m.cfg)
+			// Apply the new language setting to the i18n module
+			_ = initI18n(m.cfg.Language)
+
+			// Reinitialize the store interface in case they toggled history
+			if m.cfg.HistoryEnabled {
+				q, err := history.InitDB()
+				if err == nil {
+					m.store = history.NewSQLiteStore(q)
+				}
+			} else {
+				m.store = &history.NoOpStore{}
+			}
+
+			// Transition back to the session input state
+			m.state = stateSessionInput
+			return m, loadHistoryCmd(m.store)
+		}
+
+		if m.configForm.State == huh.StateAborted {
+			return m, tea.Quit
+		}
+
+		return m, cmd
+	}
+
 	switch msg := msg.(type) {
+	case historyLoadedMsg:
+		m.sessionHistory = msg
+		return m, nil
+
 	case tickMsg:
 		cmds := []tea.Cmd{tick()}
 		if m.data.hasCountdown {
@@ -278,28 +443,34 @@ func (m model) Update(msg tea.Msg) (tea.Model, tea.Cmd) {
 		}
 		m.lastCountdownFetch = time.Now()
 		m.sessionInput.Blur()
+
+		saveSessionCmd := func() tea.Msg {
+			_ = m.store.UpsertSession(context.Background(), m.sessionCode)
+			return nil
+		}
+
 		if msg.data.isMultiChoice {
 			m.answerInput.Blur()
 			m.state = stateMultiChoice
 
-			return m, nil
+			return m, saveSessionCmd
 		}
 		if len(msg.data.options) > 0 {
 			m.answerInput.Blur()
 			m.state = stateSingleChoice
 
-			return m, nil
+			return m, saveSessionCmd
 		}
 		if msg.data.isMultiText {
 			m.answerInput.Focus()
 			m.state = stateMultiTextInput
 
-			return m, nil
+			return m, saveSessionCmd
 		}
 		m.answerInput.Focus()
 		m.state = stateTextInput
 
-		return m, nil
+		return m, saveSessionCmd
 
 	case pollErrorMsg:
 		m.state = stateError
@@ -354,8 +525,7 @@ func (m model) Update(msg tea.Msg) (tea.Model, tea.Cmd) {
 	case tea.KeyMsg:
 		switch msg.String() {
 		case "q":
-			if m.state != stateTextInput && m.state != stateMultiTextInput {
-
+			if m.state != stateTextInput && m.state != stateMultiTextInput && m.state != stateSessionInput {
 				return m, tea.Quit
 			}
 		case "ctrl+c", "esc", "ctrl+q":
@@ -364,6 +534,31 @@ func (m model) Update(msg tea.Msg) (tea.Model, tea.Cmd) {
 
 		switch m.state {
 		case stateSessionInput:
+			if len(m.sessionHistory) > 0 {
+				switch msg.String() {
+				case "up", "k":
+					if m.historyCursor > 0 {
+						m.historyCursor--
+					} else if m.historyCursor == -1 {
+						m.historyCursor = len(m.sessionHistory) - 1
+					}
+					if m.historyCursor >= 0 && m.historyCursor < len(m.sessionHistory) {
+						m.sessionInput.SetValue(m.sessionHistory[m.historyCursor].Code)
+						m.sessionInput.SetCursor(len(m.sessionInput.Value()))
+					}
+					return m, nil
+				case "down", "j":
+					if m.historyCursor < len(m.sessionHistory)-1 {
+						m.historyCursor++
+					}
+					if m.historyCursor >= 0 && m.historyCursor < len(m.sessionHistory) {
+						m.sessionInput.SetValue(m.sessionHistory[m.historyCursor].Code)
+						m.sessionInput.SetCursor(len(m.sessionInput.Value()))
+					}
+					return m, nil
+				}
+			}
+
 			var cmd tea.Cmd
 			m.sessionInput.Focus()
 			m.sessionInput, cmd = m.sessionInput.Update(msg)
@@ -392,7 +587,7 @@ func (m model) Update(msg tea.Msg) (tea.Model, tea.Cmd) {
 				m.errMsg = ""
 				m.state = stateSubmitting
 
-				return m, submitVote(m.data, []string{value})
+				return m, submitAndSave(m, []string{value})
 			}
 
 			return m, cmd
@@ -405,7 +600,7 @@ func (m model) Update(msg tea.Msg) (tea.Model, tea.Cmd) {
 				if value == "" {
 					m.state = stateSubmitting
 
-					return m, submitVote(m.data, m.answers)
+					return m, submitAndSave(m, m.answers)
 				}
 				m.answers = append(m.answers, value)
 				m.answerInput.SetValue("")
@@ -440,7 +635,7 @@ func updateSingleChoice(m model, msg tea.KeyMsg) (tea.Model, tea.Cmd) {
 		choice := m.options[m.cursor]
 		m.state = stateSubmitting
 
-		return m, submitVote(m.data, []string{choice.value})
+		return m, submitAndSave(m, []string{choice.value})
 	}
 
 	return m, nil
@@ -471,7 +666,7 @@ func updateMultiChoice(m model, msg tea.KeyMsg) (tea.Model, tea.Cmd) {
 		}
 		m.state = stateSubmitting
 
-		return m, submitVote(m.data, values)
+		return m, submitAndSave(m, values)
 	}
 
 	return m, nil
@@ -583,11 +778,34 @@ func payloadFloat(raw json.RawMessage) float64 {
 
 func (m model) View() tea.View {
 	switch m.state {
+	case stateConfigMenu:
+		return tea.NewView(joinLines(
+			titleStyle.Render("PINGO CONFIGURATION"),
+			"",
+			m.configForm.View(),
+		))
+
 	case stateSessionInput:
+		historyView := ""
+		if len(m.sessionHistory) > 0 {
+			var b strings.Builder
+			b.WriteString(hintStyle.Render("Recent Sessions (Up/Down to select):") + "\n")
+			for i, s := range m.sessionHistory {
+				cursorMark := " "
+				if i == m.historyCursor {
+					cursorMark = ">"
+				}
+				timeStr := s.LastJoinedAt.Format("02.01.2006 15:04")
+				b.WriteString(fmt.Sprintf("%s %s (%s)\n", cursorMark, s.Code, timeStr))
+			}
+			historyView = "\n" + strings.TrimRight(b.String(), "\n")
+		}
+
 		return tea.NewView(joinLines(
 			titleStyle.Render("PINGO"),
 			"",
 			m.sessionInput.View(),
+			historyView,
 			"",
 			footerLine(m),
 		))
@@ -790,7 +1008,7 @@ func joinLines(lines ...string) string {
 }
 
 func footerLine(m model) string {
-	if m.state == stateDone || m.state == stateError {
+	if m.state == stateDone || m.state == stateError || m.state == stateConfigMenu {
 		return ""
 	}
 	width := m.width
@@ -1180,7 +1398,6 @@ func parseCountdown(body []byte) (time.Time, bool) {
 
 		return time.Time{}, false
 	}
-	// values over 1000 are likely milliseconds.
 	if parsed > 1000*time.Second {
 		ms, err := time.ParseDuration(value + "ms")
 		if err != nil {
@@ -1210,74 +1427,149 @@ func readAll(resp *http.Response) ([]byte, error) {
 }
 
 func main() {
-	sessionCode, langFlag, showHelp, showVersion, err := parseArgs(os.Args[1:])
+	flags, err := parseArgs(os.Args[1:])
 	if err != nil {
 		fmt.Println("Error:", err)
 		os.Exit(1)
 	}
-	if showHelp {
+
+	if flags.historyOn {
+		cfg := loadConfig()
+		cfg.HistoryEnabled = true
+		if err := saveConfig(cfg); err != nil {
+			fmt.Println("Error saving config:", err)
+			os.Exit(1)
+		}
+		fmt.Println("History tracking is now permanently ENABLED.")
+		return
+	}
+
+	if flags.historyOff {
+		cfg := loadConfig()
+		cfg.HistoryEnabled = false
+		if err := saveConfig(cfg); err != nil {
+			fmt.Println("Error saving config:", err)
+			os.Exit(1)
+		}
+		fmt.Println("History tracking is now permanently DISABLED.")
+		return
+	}
+
+	if flags.clearHistory {
+		if err := history.ClearDB(); err != nil {
+			fmt.Printf("Failed to clear database: %v\n", err)
+			os.Exit(1)
+		}
+		fmt.Println("History database cleared successfully.")
+		return
+	}
+
+	if flags.showHelp {
 		fmt.Print(buildUsage())
 		return
 	}
-	if showVersion {
+
+	if flags.showVersion {
 		fmt.Println(version)
 		return
 	}
-	if err := initI18n(langFlag); err != nil {
+
+	cfg := loadConfig()
+
+	// Command line lang flag overrides saved config
+	activeLang := cfg.Language
+	if flags.langFlag != "" {
+		activeLang = flags.langFlag
+	}
+
+	if err := initI18n(activeLang); err != nil {
 		fmt.Println("Error:", err)
 		os.Exit(1)
 	}
 
-	p := tea.NewProgram(initialModel(sessionCode))
+	enableHistory := cfg.HistoryEnabled || flags.historyTemp
+
+	var store history.Store
+	if enableHistory {
+		q, err := history.InitDB()
+		if err != nil {
+			fmt.Printf("Failed to initialize history database: %v\n", err)
+			os.Exit(1)
+		}
+		store = history.NewSQLiteStore(q)
+	} else {
+		store = &history.NoOpStore{}
+	}
+
+	p := tea.NewProgram(initialModel(flags, &cfg, store))
 	if _, err := p.Run(); err != nil {
 		fmt.Println(t(msgErrorPrefix), err)
 		os.Exit(1)
 	}
 }
 
-func parseArgs(args []string) (string, string, bool, bool, error) {
+func parseArgs(args []string) (cliFlags, error) {
 	fs := flag.NewFlagSet("pingo", flag.ContinueOnError)
 	fs.SetOutput(io.Discard)
 	var langFlag string
-	var showHelp bool
 	fs.StringVar(&langFlag, "lang", "", "Language tag (e.g., en, de). Defaults to system locale.")
 	fs.StringVar(&langFlag, "l", "", "Language tag (e.g., en, de). Defaults to system locale.")
 
-	flagArgs, positionals, showHelp, showVersion, err := splitArgs(args)
+	flagArgs, positionals, flags, err := splitArgs(args)
 	if err != nil {
-		return "", "", false, false, err
+		return flags, err
 	}
-	if showHelp {
-		return "", "", true, false, nil
+	if flags.showHelp {
+		return flags, nil
 	}
 	if err := fs.Parse(flagArgs); err != nil {
-		return "", "", false, false, err
+		return flags, err
 	}
-	sessionCode := ""
 	if len(positionals) > 0 {
-		sessionCode = strings.TrimSpace(positionals[0])
+		flags.sessionCode = strings.TrimSpace(positionals[0])
 	}
-	return sessionCode, langFlag, false, showVersion, nil
+	flags.langFlag = langFlag
+	return flags, nil
 }
 
-func splitArgs(args []string) ([]string, []string, bool, bool, error) {
+func splitArgs(args []string) ([]string, []string, cliFlags, error) {
+	flags := cliFlags{}
 	flagArgs := make([]string, 0, len(args))
 	positionals := make([]string, 0, len(args))
-	showHelp := false
-	showVersion := false
 	valueFlags := map[string]bool{"--lang": true, "-l": true}
+
 	for i := 0; i < len(args); i++ {
 		arg := args[i]
 		if arg == "--" {
 			positionals = append(positionals, args[i+1:]...)
 			break
 		}
+		if arg == "--config" {
+			flags.openConfig = true
+			continue
+		}
+		if arg == "--history-on" {
+			flags.historyOn = true
+			continue
+		}
+		if arg == "--history-off" {
+			flags.historyOff = true
+			continue
+		}
+		if arg == "-c" || arg == "--clear" {
+			flags.clearHistory = true
+			continue
+		}
+		if arg == "-H" || arg == "--history" {
+			flags.historyTemp = true
+			continue
+		}
 		if arg == "-h" || arg == "--help" {
-			showHelp = true
+			flags.showHelp = true
 			continue
 		}
 		if arg == "-v" || arg == "--version" {
-			showVersion = true
+			flags.showVersion = true
 			continue
 		}
 		if strings.HasPrefix(arg, "--lang=") || strings.HasPrefix(arg, "-l=") {
@@ -1288,7 +1580,7 @@ func splitArgs(args []string) ([]string, []string, bool, bool, error) {
 			flagArgs = append(flagArgs, arg)
 			if valueFlags[arg] {
 				if i+1 >= len(args) {
-					return nil, nil, false, false, fmt.Errorf("missing value for %s", arg)
+					return nil, nil, flags, fmt.Errorf("missing value for %s", arg)
 				}
 				flagArgs = append(flagArgs, args[i+1])
 				i++
@@ -1298,7 +1590,7 @@ func splitArgs(args []string) ([]string, []string, bool, bool, error) {
 		positionals = append(positionals, arg)
 	}
 
-	return flagArgs, positionals, showHelp, showVersion, nil
+	return flagArgs, positionals, flags, nil
 }
 
 func buildUsage() string {
@@ -1307,13 +1599,21 @@ func buildUsage() string {
 		"  pingo [SESSION_CODE] [flags]",
 		"",
 		"Flags:",
+		"  --config           Open the interactive configuration menu",
+		"  --history-on       Enable history tracking permanently",
+		"  --history-off      Disable history tracking permanently",
+		"  -H, --history      Enable history tracking for this run only",
+		"  -c, --clear        Clear the local history database and exit",
 		"  -l, --lang <tag>   Language tag (e.g., en, de). Defaults to system locale.",
 		"  -v, --version      Print version and exit.",
 		"  -h, --help         Show this help.",
 		"",
 		"Examples:",
+		"  pingo --config",
 		"  pingo 620610 --lang de",
 		"  pingo --lang en 620610",
 		"  pingo -l de",
+		"  pingo -H",
+		"  pingo -c",
 	}, "\n") + "\n"
 }

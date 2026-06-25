@@ -1,0 +1,14 @@
+CREATE TABLE IF NOT EXISTS sessions (
+    code TEXT PRIMARY KEY,
+    last_joined_at DATETIME DEFAULT CURRENT_TIMESTAMP NOT NULL
+);
+
+CREATE TABLE IF NOT EXISTS answers (
+    id INTEGER PRIMARY KEY AUTOINCREMENT,
+    session_code TEXT NOT NULL,
+    question_text TEXT NOT NULL,
+    options TEXT NOT NULL,
+    given_answer TEXT NOT NULL,
+    answered_at DATETIME DEFAULT CURRENT_TIMESTAMP NOT NULL,
+    FOREIGN KEY(session_code) REFERENCES sessions(code)
+);
