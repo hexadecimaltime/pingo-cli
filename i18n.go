@@ -23,6 +23,7 @@ const (
 	msgQuestionClosed         = "status.question_closed"
 	msgSubmitting             = "status.submitting"
 	msgNumberRequired         = "error.number_required"
+	msgSessionCodeInvalid     = "error.session_code_invalid"
 	msgErrorPrefix            = "error.prefix"
 	msgEnterToSubmit          = "hint.enter_submit"
 	msgAnswersSoFar           = "hint.answers_so_far"
