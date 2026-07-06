@@ -1253,8 +1253,65 @@ func extractSurveyID(hidden map[string]string, formAction string) string {
 	return ""
 }
 
+func extractQuestion(doc *goquery.Document, form *goquery.Selection) string {
+	questionSelectors := "h1, h2, h3, h4, .lead, .question-text, #question-text, [data-question-text]"
+	if form != nil && form.Length() > 0 {
+		if question := firstText(form.PrevAllFiltered(questionSelectors)); question != "" {
+
+			return question
+		}
+
+		var nestedQuestion string
+		form.PrevAll().EachWithBreak(func(_ int, s *goquery.Selection) bool {
+			nestedQuestion = firstText(s.Find(questionSelectors))
+
+			return nestedQuestion == ""
+		})
+		if nestedQuestion != "" {
+
+			return nestedQuestion
+		}
+
+		if question := firstText(form.Parent().Find(questionSelectors)); question != "" {
+
+			return question
+		}
+	}
+
+	selectors := []string{
+		"div.question-text",
+		".question-text",
+		"#question-text",
+		"[data-question-text]",
+		"h1.lead",
+		"h2.lead",
+		"h3.lead",
+		"h4.lead",
+		".lead",
+	}
+	for _, selector := range selectors {
+		if question := firstText(doc.Find(selector)); question != "" {
+
+			return question
+		}
+	}
+
+	return ""
+}
+
+func firstText(selection *goquery.Selection) string {
+	var text string
+	selection.EachWithBreak(func(_ int, s *goquery.Selection) bool {
+		text = strings.Join(strings.Fields(s.Text()), " ")
+
+		return text == ""
+	})
+
+	return text
+}
+
 func parseForm(doc *goquery.Document, form *goquery.Selection, body []byte) (pollData, bool) {
-	question := strings.TrimSpace(doc.Find("div.question-text").First().Text())
+	question := extractQuestion(doc, form)
 	formAction, _ := form.Attr("action")
 	if formAction == "" {
 		formAction = "/vote"
