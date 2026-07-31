@@ -10,6 +10,7 @@
   {"id": "status.question_closed", "translation": "Frage geschlossen."},
   {"id": "status.submitting", "translation": "Sende..."},
   {"id": "error.number_required", "translation": "Bitte gib eine Zahl ohne Tausendertrennzeichen ein, z. B. 42.7."},
+  {"id": "error.session_code_invalid", "translation": "Sitzungscode muss genau 6 Ziffern haben."},
   {"id": "error.prefix", "translation": "Fehler:"},
   {"id": "hint.enter_submit", "translation": "Enter zum Senden"},
   {"id": "hint.answers_so_far", "translation": "Antworten bisher: {{.Answers}}"},

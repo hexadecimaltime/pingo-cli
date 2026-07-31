@@ -10,6 +10,7 @@
   {"id": "status.question_closed", "translation": "Question closed."},
   {"id": "status.submitting", "translation": "Submitting..."},
   {"id": "error.number_required", "translation": "Please enter a number without thousands delimiters, for example 42.7."},
+  {"id": "error.session_code_invalid", "translation": "Session code must be exactly 6 digits."},
   {"id": "error.prefix", "translation": "Error:"},
   {"id": "hint.enter_submit", "translation": "Enter to submit"},
   {"id": "hint.answers_so_far", "translation": "Answers so far: {{.Answers}}"},

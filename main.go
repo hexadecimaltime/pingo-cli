@@ -30,9 +30,10 @@ const baseURL = "https://pingo.coactum.de"
 var version = "dev"
 
 var (
-	countdownPattern = regexp.MustCompile(`startCountdown\((\d+)\)`)
-	numberPattern    = regexp.MustCompile(`^[+-]?\d+(?:\.\d+)?$`)
-	surveyIDPattern  = regexp.MustCompile(`/surveys/([^/]+)/?`)
+	countdownPattern   = regexp.MustCompile(`startCountdown\((\d+)\)`)
+	numberPattern      = regexp.MustCompile(`^[+-]?\d+(?:\.\d+)?$`)
+	surveyIDPattern    = regexp.MustCompile(`/surveys/([^/]+)/?`)
+	sessionCodePattern = regexp.MustCompile(`^\d{6}$`)
 )
 
 var (
@@ -247,6 +248,10 @@ func initialModel(flags cliFlags, cfg *appConfig, store history.Store) model {
 			),
 		).WithShowHelp(true)
 	} else if flags.sessionCode != "" {
+		if !sessionCodePattern.MatchString(flags.sessionCode) {
+			fmt.Fprintf(os.Stderr, "Error: Session code must be exactly 6 digits.\n")
+			os.Exit(1)
+		}
 		state = stateLoading
 	}
 
@@ -565,6 +570,10 @@ func (m model) Update(msg tea.Msg) (tea.Model, tea.Cmd) {
 			if msg.String() == "enter" {
 				code := strings.TrimSpace(m.sessionInput.Value())
 				if code != "" {
+					if !sessionCodePattern.MatchString(code) {
+						m.errMsg = t(msgSessionCodeInvalid)
+						return m, nil
+					}
 					m.sessionCode = code
 					m.state = stateLoading
 
@@ -806,6 +815,7 @@ func (m model) View() tea.View {
 			"",
 			m.sessionInput.View(),
 			historyView,
+			errLine(m.errMsg),
 			"",
 			footerLine(m),
 		))
