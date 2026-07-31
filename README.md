@@ -2,6 +2,8 @@
 
 A Go TUI (Terminal User Interface) client for [Pingo](https://pingo.coactum.de) built with Charm Bubble Tea. It features a live countdown, WebSocket-based real-time updates, and interactive terminal inputs.
 
+![Pingo CLI Showcase](demo/pingo-showcase.gif)
+
 ## Features
 
 - Interactive Terminal UI using Charm Bubble Tea
