@@ -1523,6 +1523,24 @@ func main() {
 	}
 
 	if flags.clearHistory {
+		var confirm bool
+		err := huh.NewConfirm().
+			Title("Are you sure you want to clear the history database? This action cannot be undone.").
+			Affirmative("Yes").
+			Negative("No").
+			Value(&confirm).
+			Run()
+
+		if err != nil {
+			fmt.Println("Error:", err)
+			os.Exit(1)
+		}
+
+		if !confirm {
+			fmt.Println("Operation cancelled.")
+			return
+		}
+
 		if err := history.ClearDB(); err != nil {
 			fmt.Printf("Failed to clear database: %v\n", err)
 			os.Exit(1)
@@ -1623,7 +1641,7 @@ func splitArgs(args []string) ([]string, []string, cliFlags, error) {
 			flags.historyOff = true
 			continue
 		}
-		if arg == "-c" || arg == "--clear" {
+		if arg == "--clear" {
 			flags.clearHistory = true
 			continue
 		}
@@ -1670,7 +1688,7 @@ func buildUsage() string {
 		"  --history-on       Enable history tracking permanently",
 		"  --history-off      Disable history tracking permanently",
 		"  -H, --history      Enable history tracking for this run only",
-		"  -c, --clear        Clear the local history database and exit",
+		"  --clear        Clear the local history database and exit",
 		"  -l, --lang <tag>   Language tag (e.g., en, de). Defaults to system locale.",
 		"  -v, --version      Print version and exit.",
 		"  -h, --help         Show this help.",
@@ -1681,6 +1699,5 @@ func buildUsage() string {
 		"  pingo --lang en 620610",
 		"  pingo -l de",
 		"  pingo -H",
-		"  pingo -c",
 	}, "\n") + "\n"
 }
