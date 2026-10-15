@@ -12,6 +12,7 @@ A Go TUI (Terminal User Interface) client for [Pingo](https://pingo.coactum.de) 
 - Support for multiple poll types: Single Choice, Multiple Choice, and Text/Number inputs
 - Multi-language support (i18n)
 - Cross-platform binaries (Windows, macOS, Linux)
+- History of joined sessions with timestamps and optional session names
 
 ## Usage
 

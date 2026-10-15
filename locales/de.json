@@ -22,5 +22,15 @@
   {"id": "label.move", "translation": "bewegen"},
   {"id": "label.toggle", "translation": "auswählen"},
   {"id": "label.submit", "translation": "senden"},
-  {"id": "label.option_default", "translation": "Option {{.Index}}"}
+  {"id": "label.option_default", "translation": "Option {{.Index}}"},
+  {"id": "input.enter_session_name", "translation": "Sitzungsnamen eingeben"},
+  {"id": "hint.recent_sessions", "translation": "Kürzliche Sitzungen (Auf/Ab zur Auswahl, 'r' zum Umbenennen):"},
+  {"id": "label.rename_session_title", "translation": "SITZUNG UMBENENNEN"},
+  {"id": "hint.new_name_for_session", "translation": "Neuer Name für Sitzung {{.Code}}:"},
+  {"id": "confirm.clear_history_title", "translation": "Bist du sicher, dass du die Verlaufsdatenbank löschen möchtest? Dies kann nicht rückgängig gemacht werden."},
+  {"id": "confirm.yes", "translation": "Ja"},
+  {"id": "confirm.no", "translation": "Nein"},
+  {"id": "status.operation_cancelled", "translation": "Vorgang abgebrochen."},
+  {"id": "error.failed_clear_db", "translation": "Fehler beim Löschen der Datenbank: {{.Err}}"},
+  {"id": "status.history_cleared", "translation": "Verlaufsdatenbank erfolgreich gelöscht."}
 ]
