@@ -11,3 +11,6 @@ VALUES (?, ?, ?, ?);
 -- name: ListSessions :many
 SELECT * FROM sessions
 ORDER BY last_joined_at DESC;
+
+-- name: UpdateSessionName :exec
+UPDATE sessions SET name = ? WHERE code = ?;

@@ -5,6 +5,7 @@
 package history
 
 import (
+	"database/sql"
 	"time"
 )
 
@@ -19,5 +20,6 @@ type Answer struct {
 
 type Session struct {
 	Code         string
+	Name         sql.NullString
 	LastJoinedAt time.Time
 }

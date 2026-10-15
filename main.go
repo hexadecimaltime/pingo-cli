@@ -75,6 +75,7 @@ const (
 	stateDone
 	stateError
 	stateConfigMenu
+	stateRenameSession
 )
 
 type option struct {
@@ -185,6 +186,7 @@ type model struct {
 	sessionCode        string
 	question           string
 	sessionInput       textinput.Model
+	renameInput        textinput.Model
 	answerInput        textinput.Model
 	options            []option
 	cursor             int
@@ -255,10 +257,16 @@ func initialModel(flags cliFlags, cfg *appConfig, store history.Store) model {
 		state = stateLoading
 	}
 
+	renameInput := textinput.New()
+	renameInput.Placeholder = t(msgEnterSessionName)
+	renameInput.CharLimit = 32
+	renameInput.SetWidth(40)
+
 	return model{
 		state:         state,
 		sessionCode:   flags.sessionCode,
 		sessionInput:  sessionInput,
+		renameInput:   renameInput,
 		answerInput:   answerInput,
 		selected:      map[int]bool{},
 		spinner:       spin,
@@ -530,10 +538,14 @@ func (m model) Update(msg tea.Msg) (tea.Model, tea.Cmd) {
 	case tea.KeyMsg:
 		switch msg.String() {
 		case "q":
-			if m.state != stateTextInput && m.state != stateMultiTextInput && m.state != stateSessionInput {
+			if m.state != stateTextInput && m.state != stateMultiTextInput && m.state != stateSessionInput && m.state != stateRenameSession {
 				return m, tea.Quit
 			}
 		case "ctrl+c", "esc", "ctrl+q":
+			if msg.String() == "esc" && m.state == stateRenameSession {
+				m.state = stateSessionInput
+				return m, nil
+			}
 			return m, tea.Quit
 		}
 
@@ -559,6 +571,17 @@ func (m model) Update(msg tea.Msg) (tea.Model, tea.Cmd) {
 					if m.historyCursor >= 0 && m.historyCursor < len(m.sessionHistory) {
 						m.sessionInput.SetValue(m.sessionHistory[m.historyCursor].Code)
 						m.sessionInput.SetCursor(len(m.sessionInput.Value()))
+					}
+					return m, nil
+				case "r":
+					if m.historyCursor >= 0 && m.historyCursor < len(m.sessionHistory) {
+						m.state = stateRenameSession
+						m.renameInput.Reset()
+						if m.sessionHistory[m.historyCursor].Name.Valid {
+							m.renameInput.SetValue(m.sessionHistory[m.historyCursor].Name.String)
+						}
+						m.renameInput.Focus()
+						return m, textinput.Blink
 					}
 					return m, nil
 				}
@@ -620,6 +643,20 @@ func (m model) Update(msg tea.Msg) (tea.Model, tea.Cmd) {
 			return updateSingleChoice(m, msg)
 		case stateMultiChoice:
 			return updateMultiChoice(m, msg)
+		case stateRenameSession:
+			var cmd tea.Cmd
+			m.renameInput.Focus()
+			m.renameInput, cmd = m.renameInput.Update(msg)
+			if msg.String() == "enter" {
+				newName := strings.TrimSpace(m.renameInput.Value())
+				if m.historyCursor >= 0 && m.historyCursor < len(m.sessionHistory) {
+					code := m.sessionHistory[m.historyCursor].Code
+					_ = m.store.UpdateSessionName(context.Background(), code, newName)
+				}
+				m.state = stateSessionInput
+				return m, loadHistoryCmd(m.store)
+			}
+			return m, cmd
 		}
 	}
 
@@ -798,14 +835,20 @@ func (m model) View() tea.View {
 		historyView := ""
 		if len(m.sessionHistory) > 0 {
 			var b strings.Builder
-			b.WriteString(hintStyle.Render("Recent Sessions (Up/Down to select):") + "\n")
+			b.WriteString(hintStyle.Render(t(msgRecentSessions)) + "\n")
 			for i, s := range m.sessionHistory {
 				cursorMark := " "
 				if i == m.historyCursor {
 					cursorMark = ">"
 				}
 				timeStr := s.LastJoinedAt.Format("02.01.2006 15:04")
-				b.WriteString(fmt.Sprintf("%s %s (%s)\n", cursorMark, s.Code, timeStr))
+
+				displayStr := s.Code
+				if s.Name.Valid && s.Name.String != "" {
+					displayStr = fmt.Sprintf("%s [%s]", s.Name.String, s.Code)
+				}
+
+				b.WriteString(fmt.Sprintf("%s %s (%s)\n", cursorMark, displayStr, timeStr))
 			}
 			historyView = "\n" + strings.TrimRight(b.String(), "\n")
 		}
@@ -816,6 +859,16 @@ func (m model) View() tea.View {
 			m.sessionInput.View(),
 			historyView,
 			errLine(m.errMsg),
+			"",
+			footerLine(m),
+		))
+
+	case stateRenameSession:
+		return tea.NewView(joinLines(
+			titleStyle.Render(t(msgRenameSessionTitle)),
+			"",
+			hintStyle.Render(tData(msgNewNameForSession, map[string]any{"Code": m.sessionHistory[m.historyCursor].Code})),
+			m.renameInput.View(),
 			"",
 			footerLine(m),
 		))
@@ -1500,8 +1553,20 @@ func main() {
 		os.Exit(1)
 	}
 
+	cfg := loadConfig()
+
+	// Command line lang flag overrides saved config
+	activeLang := cfg.Language
+	if flags.langFlag != "" {
+		activeLang = flags.langFlag
+	}
+
+	if err := initI18n(activeLang); err != nil {
+		fmt.Println("Error:", err)
+		os.Exit(1)
+	}
+
 	if flags.historyOn {
-		cfg := loadConfig()
 		cfg.HistoryEnabled = true
 		if err := saveConfig(cfg); err != nil {
 			fmt.Println("Error saving config:", err)
@@ -1512,7 +1577,6 @@ func main() {
 	}
 
 	if flags.historyOff {
-		cfg := loadConfig()
 		cfg.HistoryEnabled = false
 		if err := saveConfig(cfg); err != nil {
 			fmt.Println("Error saving config:", err)
@@ -1525,9 +1589,9 @@ func main() {
 	if flags.clearHistory {
 		var confirm bool
 		err := huh.NewConfirm().
-			Title("Are you sure you want to clear the history database? This action cannot be undone.").
-			Affirmative("Yes").
-			Negative("No").
+			Title(t(msgConfirmClearHistory)).
+			Affirmative(t(msgConfirmYes)).
+			Negative(t(msgConfirmNo)).
 			Value(&confirm).
 			Run()
 
@@ -1537,15 +1601,15 @@ func main() {
 		}
 
 		if !confirm {
-			fmt.Println("Operation cancelled.")
+			fmt.Println(t(msgOperationCancelled))
 			return
 		}
 
 		if err := history.ClearDB(); err != nil {
-			fmt.Printf("Failed to clear database: %v\n", err)
+			fmt.Println(tData(msgFailedClearDB, map[string]any{"Err": err.Error()}))
 			os.Exit(1)
 		}
-		fmt.Println("History database cleared successfully.")
+		fmt.Println(t(msgHistoryCleared))
 		return
 	}
 
@@ -1557,19 +1621,6 @@ func main() {
 	if flags.showVersion {
 		fmt.Println(version)
 		return
-	}
-
-	cfg := loadConfig()
-
-	// Command line lang flag overrides saved config
-	activeLang := cfg.Language
-	if flags.langFlag != "" {
-		activeLang = flags.langFlag
-	}
-
-	if err := initI18n(activeLang); err != nil {
-		fmt.Println("Error:", err)
-		os.Exit(1)
 	}
 
 	enableHistory := cfg.HistoryEnabled || flags.historyTemp

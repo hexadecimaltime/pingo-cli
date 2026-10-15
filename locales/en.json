@@ -22,5 +22,15 @@
   {"id": "label.move", "translation": "move"},
   {"id": "label.toggle", "translation": "toggle"},
   {"id": "label.submit", "translation": "submit"},
-  {"id": "label.option_default", "translation": "Option {{.Index}}"}
+  {"id": "label.option_default", "translation": "Option {{.Index}}"},
+  {"id": "input.enter_session_name", "translation": "Enter session name"},
+  {"id": "hint.recent_sessions", "translation": "Recent Sessions (Up/Down to select, 'r' to rename):"},
+  {"id": "label.rename_session_title", "translation": "RENAME SESSION"},
+  {"id": "hint.new_name_for_session", "translation": "New name for session {{.Code}}:"},
+  {"id": "confirm.clear_history_title", "translation": "Are you sure you want to clear the history database? This action cannot be undone."},
+  {"id": "confirm.yes", "translation": "Yes"},
+  {"id": "confirm.no", "translation": "No"},
+  {"id": "status.operation_cancelled", "translation": "Operation cancelled."},
+  {"id": "error.failed_clear_db", "translation": "Failed to clear database: {{.Err}}"},
+  {"id": "status.history_cleared", "translation": "History database cleared successfully."}  
 ]

@@ -1,5 +1,6 @@
 CREATE TABLE IF NOT EXISTS sessions (
     code TEXT PRIMARY KEY,
+    name TEXT,
     last_joined_at DATETIME DEFAULT CURRENT_TIMESTAMP NOT NULL
 );
 

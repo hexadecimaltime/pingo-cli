@@ -7,10 +7,11 @@ package history
 
 import (
 	"context"
+	"database/sql"
 )
 
 const listSessions = `-- name: ListSessions :many
-SELECT code, last_joined_at FROM sessions
+SELECT code, name, last_joined_at FROM sessions
 ORDER BY last_joined_at DESC
 `
 
@@ -23,7 +24,7 @@ func (q *Queries) ListSessions(ctx context.Context) ([]Session, error) {
 	var items []Session
 	for rows.Next() {
 		var i Session
-		if err := rows.Scan(&i.Code, &i.LastJoinedAt); err != nil {
+		if err := rows.Scan(&i.Code, &i.Name, &i.LastJoinedAt); err != nil {
 			return nil, err
 		}
 		items = append(items, i)
@@ -56,6 +57,20 @@ func (q *Queries) SaveAnswer(ctx context.Context, arg SaveAnswerParams) error {
 		arg.Options,
 		arg.GivenAnswer,
 	)
+	return err
+}
+
+const updateSessionName = `-- name: UpdateSessionName :exec
+UPDATE sessions SET name = ? WHERE code = ?
+`
+
+type UpdateSessionNameParams struct {
+	Name sql.NullString
+	Code string
+}
+
+func (q *Queries) UpdateSessionName(ctx context.Context, arg UpdateSessionNameParams) error {
+	_, err := q.db.ExecContext(ctx, updateSessionName, arg.Name, arg.Code)
 	return err
 }
 

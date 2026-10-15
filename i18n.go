@@ -36,6 +36,16 @@ const (
 	msgToggle                 = "label.toggle"
 	msgSubmit                 = "label.submit"
 	msgOptionDefault          = "label.option_default"
+	msgEnterSessionName       = "input.enter_session_name"
+	msgRecentSessions         = "hint.recent_sessions"
+	msgRenameSessionTitle     = "label.rename_session_title"
+	msgNewNameForSession      = "hint.new_name_for_session"
+	msgConfirmClearHistory    = "confirm.clear_history_title"
+	msgConfirmYes             = "confirm.yes"
+	msgConfirmNo              = "confirm.no"
+	msgOperationCancelled     = "status.operation_cancelled"
+	msgFailedClearDB          = "error.failed_clear_db"
+	msgHistoryCleared         = "status.history_cleared"
 )
 
 //go:embed locales/*.json

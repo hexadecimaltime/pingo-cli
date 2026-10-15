@@ -29,6 +29,9 @@ func InitDB() (*Queries, error) {
 		db.Exec(string(schema))
 	}
 
+	// Defensively add the column if it's an existing database
+	db.Exec("ALTER TABLE sessions ADD COLUMN name TEXT;")
+
 	return New(db), nil
 }
 
@@ -74,4 +77,11 @@ func ClearDB() error {
 		return err
 	}
 	return nil
+}
+
+func (s *SQLiteStore) UpdateSessionName(ctx context.Context, code, name string) error {
+	return s.q.UpdateSessionName(ctx, UpdateSessionNameParams{
+		Name: sql.NullString{String: name, Valid: name != ""},
+		Code: code,
+	})
 }
