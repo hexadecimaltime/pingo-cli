@@ -3,12 +3,16 @@ package history
 import (
 	"context"
 	"database/sql"
+	_ "embed"
 	"encoding/json"
 	"os"
 	"path/filepath"
 
 	_ "modernc.org/sqlite"
 )
+
+//go:embed db/schema.sql
+var schema string
 
 func InitDB() (*Queries, error) {
 	configDir, err := os.UserConfigDir()
@@ -24,13 +28,22 @@ func InitDB() (*Queries, error) {
 		return nil, err
 	}
 
-	schema, err := os.ReadFile("db/schema.sql")
-	if err == nil {
-		db.Exec(string(schema))
+	var userVersion int
+	if err := db.QueryRow("PRAGMA user_version;").Scan(&userVersion); err != nil {
+		return nil, err
 	}
 
-	// Defensively add the column if it's an existing database
-	db.Exec("ALTER TABLE sessions ADD COLUMN name TEXT;")
+	if userVersion == 0 {
+		db.Exec(schema)
+		db.Exec("PRAGMA user_version = 1;")
+		userVersion = 1
+	}
+
+	if userVersion == 1 {
+		db.Exec("ALTER TABLE sessions ADD COLUMN name TEXT;")
+		db.Exec("PRAGMA user_version = 2;")
+		userVersion = 2
+	}
 
 	return New(db), nil
 }

@@ -90,3 +90,7 @@ release_flags := "-trimpath -ldflags=\"-s -w -X main.version={{version}}\""
     just cross darwin amd64
     just cross darwin arm64
     just cross windows amd64
+
+[group("dev")]
+sqlc:
+    sqlc generate --file sqlc.yaml
