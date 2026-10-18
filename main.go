@@ -1014,7 +1014,7 @@ func questionLine(question string) string {
 	if strings.TrimSpace(question) == "" {
 		return ""
 	}
-	return questionStyle.Render(t(msgQuestionPrefix) + question)
+	return questionStyle.Render(t(msgQuestionPrefix) + highlightMath(question))
 }
 
 func errLine(msg string) string {
@@ -1031,14 +1031,15 @@ func choiceListView(options []option, cursor int, selected map[int]bool) string 
 		if i == cursor {
 			cursorMark = ">"
 		}
+		label := highlightMath(opt.label)
 		if selected != nil {
 			mark := " "
 			if selected[i] {
 				mark = "x"
 			}
-			fmt.Fprintf(&b, "%s [%s] %s\n", cursorMark, mark, opt.label)
+			fmt.Fprintf(&b, "%s [%s] %s\n", cursorMark, mark, label)
 		} else {
-			fmt.Fprintf(&b, "%s %s\n", cursorMark, opt.label)
+			fmt.Fprintf(&b, "%s %s\n", cursorMark, label)
 		}
 	}
 	return strings.TrimRight(b.String(), "\n")
