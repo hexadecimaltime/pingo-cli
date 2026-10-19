@@ -588,7 +588,7 @@ func (m model) View() tea.View {
 				if i == m.historyCursor {
 					cursorMark = ">"
 				}
-				timeStr := s.LastJoinedAt.Format("02.01.2006 15:04")
+				timeStr := s.LastJoinedAt.Local().Format("02.01.2006 15:04")
 
 				displayStr := s.Code
 				if s.Name.Valid && s.Name.String != "" {
