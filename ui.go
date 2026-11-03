@@ -280,7 +280,7 @@ func (m model) Update(msg tea.Msg) (tea.Model, tea.Cmd) {
 		if msg.success {
 			m.state = stateDone
 			m.statusMsg = t(msgSuccessSubmitted)
-			return m, afterDelay(followUpMsg{}, 3*time.Second)
+			return m, tea.Quit
 		}
 		m.state = stateError
 		m.errMsg = tData(msgFailedSubmitStatus, map[string]any{"Status": msg.status})
