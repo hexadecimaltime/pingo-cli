@@ -51,8 +51,7 @@ release_flags := "-trimpath -ldflags=\"-s -w -X main.version={{version}}\""
     just update-winres
     {{ if target_os == "windows" { "go run github.com/tc-hib/go-winres@latest make --in .winres/winres.json --out ." } else { "" } }}
     New-Item -ItemType Directory -Force -Path {{bin_dir}} | Out-Null
-    $env:CGO_ENABLED='0'; $env:GOOS='{{target_os}}'; $env:GOARCH='{{target_arch}}'; go build {{release_flags}} -o {{bin_dir}}/{{app_name}}-{{target_os}}-{{target_arch}}{{ if target_os == "windows" { ".exe" } else { "" } }} .
-
+    $zigArch = if ('{{target_arch}}' -eq 'amd64') { 'x86_64' } else { 'aarch64' }; $zigOs = if ('{{target_os}}' -eq 'windows') { 'windows-gnu' } elseif ('{{target_os}}' -eq 'linux') { 'linux-gnu' } else { 'macos-none' }; $env:CC = "zig cc -target $zigArch-$zigOs"; $env:CXX = "zig c++ -target $zigArch-$zigOs"; $env:CGO_ENABLED='1'; $env:GOOS='{{target_os}}'; $env:GOARCH='{{target_arch}}'; go build {{release_flags}} -o {{bin_dir}}/{{app_name}}-{{target_os}}-{{target_arch}}{{ if target_os == "windows" { ".exe" } else { "" } }} .
 # Cross-compile for a specific OS/ARCH (Host: Unix)
 [unix]
 [group("build")]
