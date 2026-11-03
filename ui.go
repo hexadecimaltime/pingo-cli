@@ -429,6 +429,20 @@ func (m model) Update(msg tea.Msg) (tea.Model, tea.Cmd) {
 			}
 			return m, cmd
 		}
+	case tea.PasteMsg:
+		var cmd tea.Cmd
+		switch m.state {
+		case stateSessionInput:
+			m.sessionInput, cmd = m.sessionInput.Update(msg)
+			return m, cmd
+		case stateTextInput, stateMultiTextInput:
+			m.answerInput, cmd = m.answerInput.Update(msg)
+			return m, cmd
+		case stateRenameSession:
+			m.renameInput, cmd = m.renameInput.Update(msg)
+			return m, cmd
+		}
+		return m, nil
 	}
 	return m, nil
 }
