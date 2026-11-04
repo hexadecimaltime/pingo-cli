@@ -60,6 +60,27 @@ func (q *Queries) SaveAnswer(ctx context.Context, arg SaveAnswerParams) error {
 	return err
 }
 
+const updateCorrectAnswer = `-- name: UpdateCorrectAnswer :exec
+UPDATE answers 
+SET correct_answer = ? 
+WHERE id = (
+    SELECT a.id FROM answers a
+    WHERE a.session_code = ? 
+    ORDER BY a.answered_at DESC 
+    LIMIT 1
+)
+`
+
+type UpdateCorrectAnswerParams struct {
+	CorrectAnswer sql.NullString
+	SessionCode   string
+}
+
+func (q *Queries) UpdateCorrectAnswer(ctx context.Context, arg UpdateCorrectAnswerParams) error {
+	_, err := q.db.ExecContext(ctx, updateCorrectAnswer, arg.CorrectAnswer, arg.SessionCode)
+	return err
+}
+
 const updateSessionName = `-- name: UpdateSessionName :exec
 UPDATE sessions SET name = ? WHERE code = ?
 `

@@ -26,6 +26,7 @@ const (
 	stateError
 	stateConfigMenu
 	stateRenameSession
+	statePromptCorrectAnswer
 )
 
 type option struct {
