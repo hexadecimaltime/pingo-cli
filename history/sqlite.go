@@ -45,6 +45,12 @@ func InitDB() (*Queries, error) {
 		userVersion = 2
 	}
 
+	if userVersion == 2 {
+		db.Exec("ALTER TABLE answers ADD COLUMN correct_answer TEXT;")
+		db.Exec("PRAGMA user_version = 3;")
+		userVersion = 3
+	}
+
 	return New(db), nil
 }
 
@@ -96,5 +102,12 @@ func (s *SQLiteStore) UpdateSessionName(ctx context.Context, code, name string) 
 	return s.q.UpdateSessionName(ctx, UpdateSessionNameParams{
 		Name: sql.NullString{String: name, Valid: name != ""},
 		Code: code,
+	})
+}
+
+func (s *SQLiteStore) UpdateCorrectAnswer(ctx context.Context, sessionCode, correctAnswer string) error {
+	return s.q.UpdateCorrectAnswer(ctx, UpdateCorrectAnswerParams{
+		CorrectAnswer: sql.NullString{String: correctAnswer, Valid: correctAnswer != ""},
+		SessionCode:   sessionCode,
 	})
 }

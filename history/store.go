@@ -7,6 +7,7 @@ type Store interface {
 	SaveAnswer(ctx context.Context, sessionCode, question, answer string, options []string) error
 	ListSessions(ctx context.Context) ([]Session, error)
 	UpdateSessionName(ctx context.Context, code, name string) error
+	UpdateCorrectAnswer(ctx context.Context, sessionCode, correctAnswer string) error
 }
 
 type NoOpStore struct{}
@@ -17,3 +18,6 @@ func (n *NoOpStore) SaveAnswer(ctx context.Context, sessionCode, question, answe
 }
 func (n *NoOpStore) ListSessions(ctx context.Context) ([]Session, error)            { return []Session{}, nil }
 func (n *NoOpStore) UpdateSessionName(ctx context.Context, code, name string) error { return nil }
+func (n *NoOpStore) UpdateCorrectAnswer(ctx context.Context, sessionCode, correctAnswer string) error {
+	return nil
+}

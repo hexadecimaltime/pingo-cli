@@ -43,6 +43,7 @@ type model struct {
 	historyCursor      int
 	cfg                *appConfig
 	configForm         *huh.Form
+	isPromptingCorrect bool // Flag to reuse the original UI for the correct answer
 }
 
 func initialModel(flags cliFlags, cfg *appConfig, store history.Store) model {
@@ -278,9 +279,31 @@ func (m model) Update(msg tea.Msg) (tea.Model, tea.Cmd) {
 
 	case submitResultMsg:
 		if msg.success {
-			m.state = stateDone
-			m.statusMsg = t(msgSuccessSubmitted)
-			return m, tea.Quit
+			// Skip the correct answer prompt if history tracking is disabled
+			if _, isNoOp := m.store.(*history.NoOpStore); isNoOp {
+				m.state = stateDone
+				m.statusMsg = t(msgSuccessSubmitted)
+				return m, tea.Quit
+			}
+
+			m.isPromptingCorrect = true
+			m.cursor = 0
+			m.selected = map[int]bool{}
+			m.answerInput.SetValue("")
+			m.answers = nil
+
+			// Send them back to the appropriate UI to collect the correct answer
+			if m.data.isMultiChoice {
+				m.state = stateMultiChoice
+			} else if len(m.options) > 0 {
+				m.state = stateSingleChoice
+			} else if m.data.isMultiText {
+				m.state = stateMultiTextInput
+			} else {
+				m.state = stateTextInput
+				return m, textinput.Blink
+			}
+			return m, nil
 		}
 		m.state = stateError
 		m.errMsg = tData(msgFailedSubmitStatus, map[string]any{"Status": msg.status})
@@ -320,9 +343,14 @@ func (m model) Update(msg tea.Msg) (tea.Model, tea.Cmd) {
 				return m, tea.Quit
 			}
 		case "ctrl+c", "esc", "ctrl+q":
-			if msg.String() == "esc" && m.state == stateRenameSession {
-				m.state = stateSessionInput
-				return m, nil
+			if msg.String() == "esc" {
+				if m.state == stateRenameSession {
+					m.state = stateSessionInput
+					return m, nil
+				}
+				if m.isPromptingCorrect { // Allow skipping the correct answer
+					return m, tea.Quit
+				}
 			}
 			return m, tea.Quit
 		}
@@ -387,6 +415,14 @@ func (m model) Update(msg tea.Msg) (tea.Model, tea.Cmd) {
 			m.answerInput, cmd = m.answerInput.Update(msg)
 			if msg.String() == "enter" {
 				value := strings.TrimSpace(m.answerInput.Value())
+
+				if m.isPromptingCorrect {
+					if value != "" {
+						_ = m.store.UpdateCorrectAnswer(context.Background(), m.sessionCode, value)
+					}
+					return m, tea.Quit
+				}
+
 				if m.data.isNumberInput && !numberPattern.MatchString(value) {
 					m.errMsg = t(msgNumberRequired)
 					return m, nil
@@ -403,6 +439,12 @@ func (m model) Update(msg tea.Msg) (tea.Model, tea.Cmd) {
 			if msg.String() == "enter" {
 				value := strings.TrimSpace(m.answerInput.Value())
 				if value == "" {
+					if m.isPromptingCorrect {
+						if len(m.answers) > 0 {
+							_ = m.store.UpdateCorrectAnswer(context.Background(), m.sessionCode, strings.Join(m.answers, ", "))
+						}
+						return m, tea.Quit
+					}
 					m.state = stateSubmitting
 					return m, submitAndSave(m, m.answers)
 				}
@@ -463,6 +505,12 @@ func updateSingleChoice(m model, msg tea.KeyMsg) (tea.Model, tea.Cmd) {
 			return m, nil
 		}
 		choice := m.options[m.cursor]
+
+		if m.isPromptingCorrect {
+			_ = m.store.UpdateCorrectAnswer(context.Background(), m.sessionCode, choice.label)
+			return m, tea.Quit
+		}
+
 		m.state = stateSubmitting
 		return m, submitAndSave(m, []string{choice.value})
 	}
@@ -487,10 +535,18 @@ func updateMultiChoice(m model, msg tea.KeyMsg) (tea.Model, tea.Cmd) {
 		m.selected[m.cursor] = !m.selected[m.cursor]
 	case tea.KeyEnter:
 		var values []string
+		var labels []string
 		for idx, opt := range m.options {
 			if m.selected[idx] {
 				values = append(values, opt.value)
+				labels = append(labels, opt.label)
 			}
+		}
+		if m.isPromptingCorrect {
+			if len(labels) > 0 {
+				_ = m.store.UpdateCorrectAnswer(context.Background(), m.sessionCode, strings.Join(labels, ", "))
+			}
+			return m, tea.Quit
 		}
 		m.state = stateSubmitting
 		return m, submitAndSave(m, values)
@@ -583,6 +639,14 @@ func payloadFloat(raw json.RawMessage) float64 {
 	return 0
 }
 
+func correctPromptLine(m model) string {
+	if m.isPromptingCorrect {
+		return okStyle.Render("✓ Successfully submitted!") + "\n" +
+			hintStyle.Render("What was the correct answer? (Saves to local history, Esc to skip)") + "\n"
+	}
+	return ""
+}
+
 func (m model) View() tea.View {
 	switch m.state {
 	case stateConfigMenu:
@@ -644,6 +708,9 @@ func (m model) View() tea.View {
 	case stateTextInput:
 		q := questionLine(m.question)
 		lines := []string{timeLeftLine(m.data)}
+		if p := correctPromptLine(m); p != "" {
+			lines = append(lines, p)
+		}
 		if q != "" {
 			lines = append(lines, q)
 		}
@@ -654,6 +721,9 @@ func (m model) View() tea.View {
 		answers := strings.Join(m.answers, ", ")
 		q := questionLine(m.question)
 		lines := []string{timeLeftLine(m.data)}
+		if p := correctPromptLine(m); p != "" {
+			lines = append(lines, p)
+		}
 		if q != "" {
 			lines = append(lines, q)
 		}
@@ -671,6 +741,9 @@ func (m model) View() tea.View {
 	case stateSingleChoice:
 		q := questionLine(m.question)
 		lines := []string{timeLeftLine(m.data)}
+		if p := correctPromptLine(m); p != "" {
+			lines = append(lines, p)
+		}
 		if q != "" {
 			lines = append(lines, q)
 		}
@@ -680,6 +753,9 @@ func (m model) View() tea.View {
 	case stateMultiChoice:
 		q := questionLine(m.question)
 		lines := []string{timeLeftLine(m.data)}
+		if p := correctPromptLine(m); p != "" {
+			lines = append(lines, p)
+		}
 		if q != "" {
 			lines = append(lines, q)
 		}
@@ -816,13 +892,22 @@ func footerLine(m model) string {
 
 func footerHotkeys(m model) string {
 	parts := []string{}
-	if m.state == stateSingleChoice || m.state == stateMultiChoice {
-		parts = append(parts, keyStyle.Render("Up/Down")+barDimStyle.Render(" "+t(msgMove)))
+
+	if m.isPromptingCorrect {
+		parts = []string{
+			keyStyle.Render("Enter") + barDimStyle.Render(" Save"),
+			keyStyle.Render("Esc") + barDimStyle.Render(" Skip"),
+		}
+	} else {
+		if m.state == stateSingleChoice || m.state == stateMultiChoice {
+			parts = append(parts, keyStyle.Render("Up/Down")+barDimStyle.Render(" "+t(msgMove)))
+		}
+		if m.state == stateMultiChoice {
+			parts = append(parts, keyStyle.Render("Space")+barDimStyle.Render(" "+t(msgToggle)))
+		}
+		parts = append(parts, keyStyle.Render("Enter")+barDimStyle.Render(" "+t(msgSubmit)))
 	}
-	if m.state == stateMultiChoice {
-		parts = append(parts, keyStyle.Render("Space")+barDimStyle.Render(" "+t(msgToggle)))
-	}
-	parts = append(parts, keyStyle.Render("Enter")+barDimStyle.Render(" "+t(msgSubmit)))
+
 	joiner := barDimStyle.Render("  ") + barSepStyle.Render("|") + barDimStyle.Render("  ")
 	return strings.Join(parts, joiner)
 }

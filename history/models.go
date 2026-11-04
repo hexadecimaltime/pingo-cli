@@ -10,12 +10,13 @@ import (
 )
 
 type Answer struct {
-	ID           int64
-	SessionCode  string
-	QuestionText string
-	Options      string
-	GivenAnswer  string
-	AnsweredAt   time.Time
+	ID            int64
+	SessionCode   string
+	QuestionText  string
+	Options       string
+	GivenAnswer   string
+	CorrectAnswer sql.NullString
+	AnsweredAt    time.Time
 }
 
 type Session struct {
