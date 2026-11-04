@@ -7,7 +7,7 @@ import (
 
 	tea "charm.land/bubbletea/v2"
 	"charm.land/huh/v2"
-	"github.com/hexadecimaltime/pingo-cli/history"
+	"github.com/hexadecimaltime/pingo-tui/history"
 )
 
 // --- Shared Types & Bubble Tea Messages ---

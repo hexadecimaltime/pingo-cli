@@ -20,7 +20,7 @@ func getConfigPath() string {
 	if err != nil {
 		return "config.json"
 	}
-	return filepath.Join(configDir, "pingo-cli", "config.json")
+	return filepath.Join(configDir, "pingo-tui", "config.json")
 }
 
 func loadConfig() appConfig {

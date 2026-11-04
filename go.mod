@@ -1,4 +1,4 @@
-module github.com/hexadecimaltime/pingo-cli
+module github.com/hexadecimaltime/pingo-tui
 
 go 1.25.8
 
